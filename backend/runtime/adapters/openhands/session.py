@@ -10,7 +10,7 @@ class OpenHandsAgentSession(AgentSession):
     def __init__(
         self,
         session_id: str,
-        conversation_id: str,
+        conversation_id: Optional[str],
         config: SessionConfig,
     ):
         self._session_id = session_id
@@ -25,8 +25,8 @@ class OpenHandsAgentSession(AgentSession):
         return self._session_id
 
     @property
-    def conversation_id(self) -> str:
-        """The underlying OpenHands conversation UUID."""
+    def remote_conversation_id(self) -> Optional[str]:
+        """The underlying OpenHands conversation identifier, or None if initialization failed."""
         return self._conversation_id
 
     @property

@@ -5,7 +5,14 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 from apps.realtime.events import EventType, NormalizedEvent
 from runtime.exceptions import SessionNotFoundError
 from runtime.interfaces.runtime import TersuiteAgentRuntime
-from runtime.interfaces.session import AgentSession, SessionConfig, SessionStatus, TaskResult
+from runtime.interfaces.session import (
+    AgentSession,
+    ExecutionStatus,
+    FailureCategory,
+    SessionConfig,
+    SessionStatus,
+    TaskResult,
+)
 
 
 class MockAgentSession(AgentSession):
@@ -13,6 +20,7 @@ class MockAgentSession(AgentSession):
 
     def __init__(self, session_id: str, config: SessionConfig):
         self._session_id = session_id
+        self._conversation_id = f"mock-conv-{uuid.uuid4().hex[:8]}"
         self._config = config
         self._status = SessionStatus.INITIALIZING
         self._events: List[NormalizedEvent] = []
@@ -21,6 +29,10 @@ class MockAgentSession(AgentSession):
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def remote_conversation_id(self) -> Optional[str]:
+        return self._conversation_id
 
     @property
     def config(self) -> SessionConfig:
@@ -75,6 +87,7 @@ class MockAgentRuntime(TersuiteAgentRuntime):
             raise SessionNotFoundError(f"Session with ID '{session_id}' was not found.")
 
         # Simulate execution steps
+        session.update_status(SessionStatus.RUNNING)
         session.record_event(
             EventType.TASK_STARTED,
             {"prompt": prompt, "context": context or {}},
@@ -99,6 +112,8 @@ class MockAgentRuntime(TersuiteAgentRuntime):
         result = TaskResult(
             session_id=session_id,
             success=True,
+            execution_status=ExecutionStatus.SUCCESS,
+            failure_category=FailureCategory.NONE,
             output=f"Executed task: '{prompt}' successfully in mock environment.",
             artifacts=["scaffold.zip", "manifest.json"],
             token_usage={"prompt_tokens": 120, "completion_tokens": 340, "total_tokens": 460},
@@ -108,13 +123,16 @@ class MockAgentRuntime(TersuiteAgentRuntime):
         session.update_status(SessionStatus.COMPLETED)
         return result
 
-    def observe_events(self, session_id: str) -> List[NormalizedEvent]:
+    def get_historical_events(self, session_id: str) -> List[NormalizedEvent]:
         session = self._sessions.get(session_id)
         if not session:
             raise SessionNotFoundError(f"Session with ID '{session_id}' was not found.")
         return list(session._events)
 
-    async def stream_events(self, session_id: str) -> AsyncIterator[NormalizedEvent]:
+    def observe_events(self, session_id: str) -> List[NormalizedEvent]:
+        return self.get_historical_events(session_id)
+
+    async def subscribe_events(self, session_id: str) -> AsyncIterator[NormalizedEvent]:
         session = self._sessions.get(session_id)
         if not session:
             raise SessionNotFoundError(f"Session with ID '{session_id}' was not found.")
@@ -130,6 +148,7 @@ class MockAgentRuntime(TersuiteAgentRuntime):
             return TaskResult(
                 session_id=session_id,
                 success=False,
+                execution_status=ExecutionStatus.PENDING,
                 output="Execution still in progress or no result produced.",
             )
         return session._result
@@ -139,7 +158,10 @@ class MockAgentRuntime(TersuiteAgentRuntime):
         if not session:
             raise SessionNotFoundError(f"Session with ID '{session_id}' was not found.")
         session.update_status(SessionStatus.CANCELLED)
-        session.record_event(EventType.GENERATION_CANCELLED, {"reason": "User requested cancellation"})
+        session.record_event(
+            EventType.GENERATION_CANCELLED,
+            {"reason": "User requested cancellation"},
+        )
         return True
 
     def close_session(self, session_id: str) -> bool:

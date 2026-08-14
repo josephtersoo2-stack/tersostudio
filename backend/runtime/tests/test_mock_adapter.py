@@ -2,7 +2,7 @@
 import unittest
 from apps.realtime.events import EventType
 from runtime.adapters.mock_adapter import MockAgentRuntime
-from runtime.interfaces.session import SessionConfig, SessionStatus
+from runtime.interfaces.session import ExecutionStatus, SessionConfig, SessionStatus
 from runtime.exceptions import SessionNotFoundError
 
 
@@ -35,12 +35,13 @@ class MockAdapterLifecycleTests(unittest.TestCase):
         result = self.runtime.send_task(session.session_id, prompt)
 
         self.assertTrue(result.success)
+        self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
         self.assertIn("Create a simple WordPress settings page", result.output)
         self.assertEqual(session.status, SessionStatus.COMPLETED)
 
         # 4. Verify recorded events
-        updated_events = self.runtime.observe_events(session.session_id)
-        event_types = [e.event_type for e in updated_events]
+        historical_events = self.runtime.get_historical_events(session.session_id)
+        event_types = [e.event_type for e in historical_events]
         self.assertIn(EventType.TASK_STARTED, event_types)
         self.assertIn(EventType.AGENT_THINKING, event_types)
         self.assertIn(EventType.AGENT_TOOL_STARTED, event_types)

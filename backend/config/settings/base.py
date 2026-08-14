@@ -183,7 +183,7 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
 
 # OpenHands Runtime Configuration (Decoupled Adapter settings)
-OPENHANDS_SERVER_URL = os.getenv("OPENHANDS_SERVER_URL", "http://localhost:8000")
+OPENHANDS_SERVER_URL = os.getenv("OPENHANDS_SERVER_URL", "http://localhost:8010")
 OPENHANDS_API_KEY = os.getenv("OPENHANDS_API_KEY", "")
 OPENHANDS_TIMEOUT_SECONDS = int(os.getenv("OPENHANDS_TIMEOUT_SECONDS", "120"))
 OPENHANDS_DEFAULT_MODEL = os.getenv(

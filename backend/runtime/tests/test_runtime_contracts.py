@@ -26,9 +26,11 @@ class RuntimeContractTests(unittest.TestCase):
         session = MockAgentSession(session_id="s-1", config=config)
         self.assertIsInstance(session, AgentSession)
         self.assertEqual(session.status, SessionStatus.INITIALIZING)
+        self.assertIsNotNone(session.remote_conversation_id)
 
     def test_openhands_session_implements_session_interface(self):
         """Verify OpenHandsAgentSession is a subclass of AgentSession."""
         config = SessionConfig(generation_id="gen-1", agent_run_id="run-1")
-        session = OpenHandsAgentSession(session_id="s-1", conversation_id="c-1", config=config)
+        session = OpenHandsAgentSession(session_id="s-1", conversation_id="conv-123", config=config)
         self.assertIsInstance(session, AgentSession)
+        self.assertEqual(session.remote_conversation_id, "conv-123")
