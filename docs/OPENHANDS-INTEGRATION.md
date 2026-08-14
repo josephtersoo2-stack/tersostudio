@@ -1,6 +1,6 @@
 # OPENHANDS-INTEGRATION.md — Tersuite AI Studio OpenHands Architecture & Integration Guide
 
-## 1. Architectural Overview & Component Distinctions
+## 1. Architectural Overview & Single Execution Path
 
 **Tersuite AI Studio** uses the official **OpenHands Software Agent SDK & Agent Server (v1.42.1)** as its execution engine for executing agent conversations, managing bash/python tools, and orchestrating sandboxed workspaces.
 
@@ -8,9 +8,11 @@ Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/
 
 > **Core Decoupling Rule**: The Django business, generation, and intelligence layers must never import or depend directly on OpenHands internals. All agent interactions must go through the `TersuiteAgentRuntime` abstraction layer.
 
+> **Single Execution Path Rule**: The production adapter (`OpenHandsAgentRuntime`) has exactly **one** execution path: through the official OpenHands SDK `RemoteConversation`. There is no secondary homemade REST fallback or retry loop. If SDK execution fails, the failure is strictly classified (`FailureCategory`), error details are preserved, and a failed `TaskResult` is returned.
+
 ---
 
-### Component Distinctions
+### Component Distinctions & Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -30,10 +32,11 @@ Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/
 │      MockAgentRuntime       │ │    OpenHandsAgentRuntime    │
 │  (Deterministic Unit Tests) │ │ (Production Adapter Bridge) │
 └─────────────────────────────┘ └──────────────┬──────────────┘
-                                               │ (SDK / REST / WS)
+                                               │ (Sole Execution Path)
                                                ▼
                                 ┌─────────────────────────────┐
-                                │ OpenHands RemoteConversation│
+                                │ Official OpenHands SDK      │
+                                │    RemoteConversation       │
                                 │   (openhands-sdk v1.42.1)   │
                                 └──────────────┬──────────────┘
                                                │
@@ -47,7 +50,7 @@ Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/
 
 1. **OpenHands Software Agent SDK (`openhands-sdk==1.42.1`)**:
    - The core agent framework defining `Agent`, `LLM`, `Conversation`, `RemoteConversation`, `RemoteWorkspace`, `Tool`, and event models.
-   - Provides client-side abstractions for communicating with remote OpenHands servers over HTTP and WebSocket.
+   - Provides official abstractions for conversation lifecycle: `send_message()`, `run()`, `interrupt()`, `close()`, and `state.events`.
 
 2. **Official OpenHands Agent Server (`openhands-agent-server==1.42.1`)**:
    - The official FastAPI-based agent execution server provided by the OpenHands project.
@@ -58,7 +61,8 @@ Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/
 3. **Tersuite Agent Runtime Adapter (`backend/runtime/adapters/openhands/adapter.py`)**:
    - The decoupled adapter implementing `TersuiteAgentRuntime`.
    - Bridges Tersuite domain objects (`SessionConfig`, `TaskResult`, `NormalizedEvent`) to the official OpenHands SDK `RemoteConversation` and `RemoteWorkspace`.
-   - OpenHands owns its protocol; Tersuite owns the domain abstraction boundary.
+   - Strictly uses the official SDK for conversation lifecycle, event streaming, and stats access.
+   - **No fallback to handwritten HTTP REST protocols.**
 
 4. **Mock Adapter (`backend/runtime/adapters/mock/`)**:
    - In-memory deterministic mock implementation used for fast, deterministic unit and regression tests without requiring network dependencies or external LLM API tokens.

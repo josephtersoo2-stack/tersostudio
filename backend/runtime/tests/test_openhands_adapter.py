@@ -1,6 +1,7 @@
-"""Unit tests for the OpenHands Agent Server adapter boundary (v1.42.1 protocol).
+"""Unit tests for the OpenHands Agent Server adapter boundary (Official SDK Path).
 
-Verifies strict RemoteConversation protocol compliance, error propagation, and event normalization.
+Verifies strict official SDK RemoteConversation lifecycle execution, error classification,
+and event normalization with zero fallback to homemade REST layers.
 """
 import unittest
 from unittest.mock import MagicMock, patch
@@ -18,7 +19,7 @@ from runtime.interfaces.session import (
 
 
 class OpenHandsAdapterTests(unittest.TestCase):
-    """Test suite verifying OpenHands adapter protocol and error semantics."""
+    """Test suite verifying OpenHands adapter official SDK lifecycle and error semantics."""
 
     def setUp(self):
         self.config = OpenHandsServerConfig(
@@ -41,124 +42,118 @@ class OpenHandsAdapterTests(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertIn("OpenHands-SDK/1.42.1", headers["User-Agent"])
 
-    @patch("httpx.Client.post")
-    def test_create_session_success(self, mock_post):
-        """Verify create_session makes POST /api/conversations and extracts conversation ID."""
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 201
-        mock_response.json.return_value = {"conversation_id": "conv-remote-123"}
-        mock_post.return_value = mock_response
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_create_session_success(self, mock_conv_cls):
+        """Verify create_session initializes official OpenHands Conversation factory."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-123"
+        mock_conv_cls.return_value = mock_conv
 
         session = self.runtime.create_session(self.session_config)
 
         self.assertIsNotNone(session)
         self.assertEqual(session.status, SessionStatus.ACTIVE)
-        self.assertEqual(session.remote_conversation_id, "conv-remote-123")
+        self.assertEqual(session.remote_conversation_id, "conv-sdk-123")
+        self.assertEqual(session.conversation_obj, mock_conv)
 
-    @patch("httpx.Client.post")
-    def test_create_session_fails_on_unreachable_server(self, mock_post):
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_create_session_fails_on_unreachable_server(self, mock_conv_cls):
         """Verify create_session raises AdapterConnectionError when server is unreachable."""
-        mock_post.side_effect = httpx.ConnectError("Connection refused by host")
+        mock_conv_cls.side_effect = httpx.ConnectError("Connection refused by host")
 
         with self.assertRaises(AdapterConnectionError) as ctx:
             self.runtime.create_session(self.session_config)
 
         self.assertIn("Cannot connect to OpenHands Agent Server", str(ctx.exception))
 
-    @patch("httpx.Client.get")
-    @patch("httpx.Client.post")
-    def test_send_task_success_protocol_flow(self, mock_post, mock_get):
-        """Verify send_task follows v1.42.1 RemoteConversation flow:
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_send_task_success_sdk_execution(self, mock_conv_cls):
+        """Verify send_task delegates solely to conv.send_message() and conv.run()."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-456"
 
-        1. POST /api/conversations (create session)
-        2. POST /api/conversations/{id}/events (send user message)
-        3. POST /api/conversations/{id}/run (trigger run)
-        4. GET /api/conversations/{id} (inspect state)
-        """
-        # Session creation mock
-        mock_create_resp = MagicMock(spec=httpx.Response)
-        mock_create_resp.status_code = 201
-        mock_create_resp.json.return_value = {"conversation_id": "conv-456"}
-
-        # Message submit mock
-        mock_msg_resp = MagicMock(spec=httpx.Response)
-        mock_msg_resp.status_code = 200
-        mock_msg_resp.json.return_value = {"status": "ok"}
-
-        # Run trigger mock
-        mock_run_resp = MagicMock(spec=httpx.Response)
-        mock_run_resp.status_code = 200
-        mock_run_resp.json.return_value = {"status": "running"}
-
-        # State check mock
-        mock_state_resp = MagicMock(spec=httpx.Response)
-        mock_state_resp.status_code = 200
-        mock_state_resp.json.return_value = {
-            "status": "COMPLETED",
-            "output": "Generated WordPress plugin skeleton.",
-            "token_usage": {"total_tokens": 500},
+        mock_event = MagicMock()
+        mock_event.role = "assistant"
+        mock_event.content = "Generated WordPress plugin skeleton."
+        mock_event.output = None
+        mock_event.model_dump.return_value = {
+            "type": "message",
+            "role": "assistant",
+            "content": "Generated WordPress plugin skeleton.",
         }
+        mock_conv.state.events = [mock_event]
+        mock_conv.state.stats.model_dump.return_value = {"total_tokens": 420}
 
-        mock_post.side_effect = [mock_create_resp, mock_msg_resp, mock_run_resp]
-        mock_get.return_value = mock_state_resp
+        mock_conv_cls.return_value = mock_conv
 
         session = self.runtime.create_session(self.session_config)
         result = self.runtime.send_task(session.session_id, "Generate plugin skeleton.")
 
+        # Verify SDK methods called
+        mock_conv.send_message.assert_called_once_with("Generate plugin skeleton.")
+        mock_conv.run.assert_called_once()
+
+        # Verify result extracted from SDK state
         self.assertTrue(result.success)
         self.assertEqual(result.execution_status, ExecutionStatus.SUCCESS)
         self.assertEqual(result.failure_category, FailureCategory.NONE)
         self.assertEqual(result.output, "Generated WordPress plugin skeleton.")
+        self.assertEqual(result.token_usage, {"total_tokens": 420})
 
-    @patch("httpx.Client.post")
-    def test_send_task_reports_infrastructure_failure_on_network_error(self, mock_post):
-        """Verify send_task reports INFRASTRUCTURE_UNAVAILABLE on connection error.
-
-        Guarantees NO fake success is reported when execution fails.
-        """
-        mock_create_resp = MagicMock(spec=httpx.Response)
-        mock_create_resp.status_code = 201
-        mock_create_resp.json.return_value = {"conversation_id": "conv-456"}
-
-        mock_post.side_effect = [
-            mock_create_resp,
-            httpx.ConnectError("Connection reset by peer"),
-        ]
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_send_task_reports_model_error_on_sdk_failure(self, mock_conv_cls):
+        """Verify send_task classifies litellm / model errors properly without REST fallback."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-789"
+        mock_conv.run.side_effect = Exception("LLMBadRequestError: litellm.BadRequestError: Provider NOT provided for model")
+        mock_conv_cls.return_value = mock_conv
 
         session = self.runtime.create_session(self.session_config)
-        result = self.runtime.send_task(session.session_id, "Generate plugin skeleton.")
+        result = self.runtime.send_task(session.session_id, "Execute task.")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.execution_status, ExecutionStatus.AGENT_FAILED)
+        self.assertEqual(result.failure_category, FailureCategory.MODEL_ERROR)
+        self.assertFalse(result.retryable)
+        self.assertIn("litellm.BadRequestError", result.error)
+
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_send_task_reports_infrastructure_failure_on_network_error(self, mock_conv_cls):
+        """Verify send_task reports INFRASTRUCTURE_UNAVAILABLE on connection loss."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-net"
+        mock_conv.run.side_effect = httpx.ConnectError("Connection reset by peer")
+        mock_conv_cls.return_value = mock_conv
+
+        session = self.runtime.create_session(self.session_config)
+        result = self.runtime.send_task(session.session_id, "Execute task.")
 
         self.assertFalse(result.success)
         self.assertEqual(result.execution_status, ExecutionStatus.INFRASTRUCTURE_UNAVAILABLE)
         self.assertEqual(result.failure_category, FailureCategory.NETWORK_CONNECTION)
         self.assertTrue(result.retryable)
-        self.assertIn("Infrastructure unavailable", result.error)
+        self.assertIn("Infrastructure connection error", result.error)
 
-    @patch("httpx.Client.post")
-    def test_cancel_execution_calls_interrupt_endpoint(self, mock_post):
-        """Verify cancel_execution issues POST /api/conversations/{id}/interrupt."""
-        mock_create_resp = MagicMock(spec=httpx.Response)
-        mock_create_resp.status_code = 201
-        mock_create_resp.json.return_value = {"conversation_id": "conv-interrupt-test"}
-
-        mock_interrupt_resp = MagicMock(spec=httpx.Response)
-        mock_interrupt_resp.status_code = 200
-
-        mock_post.side_effect = [mock_create_resp, mock_interrupt_resp]
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_cancel_execution_calls_sdk_interrupt(self, mock_conv_cls):
+        """Verify cancel_execution issues conv.interrupt() via official SDK."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-interrupt"
+        mock_conv_cls.return_value = mock_conv
 
         session = self.runtime.create_session(self.session_config)
         cancelled = self.runtime.cancel_execution(session.session_id)
 
+        mock_conv.interrupt.assert_called_once()
         self.assertTrue(cancelled)
         self.assertEqual(session.status, SessionStatus.CANCELLED)
 
-    @patch("httpx.Client.post")
-    def test_event_normalization_from_json_and_sdk(self, mock_post):
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_event_normalization_from_json_and_sdk(self, mock_conv_cls):
         """Verify translation of raw JSON and SDK event types into NormalizedEvent."""
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.status_code = 201
-        mock_response.json.return_value = {"conversation_id": "conv-789"}
-        mock_post.return_value = mock_response
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-events"
+        mock_conv_cls.return_value = mock_conv
 
         session = self.runtime.create_session(self.session_config)
 
