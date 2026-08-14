@@ -1,20 +1,19 @@
 """OpenHands Agent Server adapter implementation for Tersuite.
 
 Uses the official OpenHands Software Agent SDK (v1.42.1) RemoteConversation
-abstractions and conforms strictly to the RemoteConversation protocol:
-  - POST /api/conversations (Session Creation)
-  - POST /api/conversations/{id}/events (Send Message)
-  - POST /api/conversations/{id}/run (Trigger Execution)
-  - WebSocket /sockets/events/{id} (Live Event Streaming)
-  - GET  /api/conversations/{id}/events/search (Historical Event Sync)
-  - GET  /api/conversations/{id} (Execution Status Inspection)
-  - POST /api/conversations/{id}/interrupt (Interruption / Cancellation)
+abstractions and conforms strictly to the OpenHands SDK architecture:
+  - RemoteWorkspace (host, working_dir, client connection)
+  - RemoteConversation (id, send_message, run, interrupt, close, events)
+  - Event normalization from OpenHands SDK events to Tersuite NormalizedEvent
 """
 import asyncio
 import logging
+import os
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx
+from pydantic import SecretStr
+
 from apps.realtime.events import EventType, NormalizedEvent
 from runtime.exceptions import (
     AdapterConnectionError,
@@ -39,14 +38,18 @@ logger = logging.getLogger("tersuite.runtime")
 # Attempt importing official OpenHands SDK components
 try:
     from openhands.sdk.agent import Agent as OpenHandsAgent
-    from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
+    from openhands.sdk.conversation import Conversation as OpenHandsConversation
+    from openhands.sdk.conversation.impl.remote_conversation import (
+        RemoteConversation,
+        RemoteEventsList,
+    )
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
     from openhands.sdk.event import (
         ActionEvent,
         AgentErrorEvent,
         Event as OpenHandsEvent,
         InterruptEvent,
         MessageEvent,
-        ObservationBaseEvent,
         ObservationEvent,
     )
     from openhands.sdk.llm import LLM as OpenHandsLLM
@@ -58,16 +61,19 @@ except ImportError:
     OpenHandsAgent = None
     OpenHandsLLM = None
     OpenHandsRemoteWorkspace = None
+    OpenHandsConversation = None
     RemoteConversation = None
     OpenHandsEvent = None
+    ConversationExecutionStatus = None
 
 
 class OpenHandsAgentRuntime(TersuiteAgentRuntime):
-    """Production adapter bridging Tersuite to OpenHands v1.42.1."""
+    """Production adapter bridging Tersuite to OpenHands Software Agent SDK v1.42.1."""
 
     def __init__(self, config: Optional[OpenHandsServerConfig] = None):
         self.config = config or OpenHandsServerConfig()
         self._sessions: Dict[str, OpenHandsAgentSession] = {}
+        self._results: Dict[str, TaskResult] = {}
         self._client = httpx.Client(
             base_url=self.config.server_url.rstrip("/"),
             timeout=self.config.timeout_seconds,
@@ -85,25 +91,24 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         return headers
 
     def create_session(self, config: SessionConfig) -> AgentSession:
-        """Instantiate a new conversation session using the OpenHands protocol.
+        """Instantiate a new conversation session using OpenHands RemoteConversation protocol.
 
-        Creates conversation via POST /api/conversations on OpenHands Agent Server.
+        Creates conversation via official OpenHands SDK Conversation factory or REST protocol.
         Raises AdapterConnectionError if the remote server cannot be reached.
         Never fabricates detached synthetic conversation IDs.
         """
         session_id = f"oh-sess-{uuid.uuid4().hex[:12]}"
+        conversation_id: Optional[str] = None
+        conversation_obj: Optional[Any] = None
+
+        # 1. Direct REST creation protocol to ensure server reachability and extract remote conversation ID
         payload = {
             "model": config.model or self.config.default_model,
             "system_prompt": config.system_prompt,
             "tools": config.tools,
             "max_iterations": config.max_iterations,
         }
-
-        conversation_id: Optional[str] = None
-        conversation_obj: Optional[Any] = None
-
         try:
-            # 1. Create conversation record on OpenHands Agent Server
             response = self._client.post("/api/conversations", json=payload)
             if response.status_code not in (200, 201):
                 err_msg = (
@@ -120,36 +125,39 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                     "OpenHands Agent Server response missing 'conversation_id'",
                     details={"response": data},
                 )
-
-            # 2. Optionally initialize official SDK RemoteConversation wrapper if available
-            if OPENHANDS_SDK_AVAILABLE:
-                try:
-                    llm = OpenHandsLLM(
-                        model=config.model or self.config.default_model,
-                        api_key=self.config.api_key or None,
-                    )
-                    agent = OpenHandsAgent(
-                        llm=llm,
-                        system_prompt=config.system_prompt,
-                    )
-                    workspace = OpenHandsRemoteWorkspace(
-                        host=self.config.server_url,
-                        api_key=self.config.api_key or None,
-                    )
-                    conversation_uuid = uuid.UUID(conversation_id)
-                    conversation_obj = RemoteConversation(
-                        agent=agent,
-                        workspace=workspace,
-                        conversation_id=conversation_uuid,
-                        max_iteration_per_run=config.max_iterations,
-                    )
-                except Exception as sdk_exc:
-                    logger.debug(f"SDK object initialization info: {sdk_exc}")
-
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
             err_msg = f"Cannot connect to OpenHands Agent Server at {self.config.server_url}: {exc}"
             logger.error(err_msg)
-            raise AdapterConnectionError(err_msg, details={"error": str(exc)})
+            raise AdapterConnectionError(err_msg) from exc
+
+        # 2. Attach official OpenHands SDK RemoteConversation wrapper if available
+        if OPENHANDS_SDK_AVAILABLE and OpenHandsRemoteWorkspace is not None:
+            try:
+                model_name = config.model or self.config.default_model
+                api_key_str = self.config.api_key or os.getenv("OPENAI_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or os.getenv("GEMINI_API_KEY") or ""
+                
+                llm = OpenHandsLLM(
+                    model=model_name,
+                    api_key=SecretStr(api_key_str) if api_key_str else None,
+                )
+                agent = OpenHandsAgent(
+                    llm=llm,
+                    system_prompt=config.system_prompt,
+                )
+                workspace = OpenHandsRemoteWorkspace(
+                    host=self.config.server_url,
+                    api_key=self.config.api_key or None,
+                    working_dir=".",
+                )
+                conversation_uuid = uuid.UUID(conversation_id)
+                conversation_obj = RemoteConversation(
+                    agent=agent,
+                    workspace=workspace,
+                    conversation_id=conversation_uuid,
+                    max_iteration_per_run=config.max_iterations,
+                )
+            except Exception as sdk_exc:
+                logger.debug(f"SDK Conversation wrapper initialization: {sdk_exc}")
 
         session = OpenHandsAgentSession(
             session_id=session_id,
@@ -158,19 +166,17 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
             conversation_obj=conversation_obj,
         )
         session.update_status(SessionStatus.ACTIVE)
-
-        start_event = NormalizedEvent(
-            event_type=EventType.AGENT_STARTED,
-            generation_id=config.generation_id,
-            agent_run_id=config.agent_run_id,
-            payload={"conversation_id": conversation_id, "model": config.model},
-        )
-        session.add_event(start_event)
         self._sessions[session_id] = session
+
+        logger.info(
+            f"Created OpenHands session '{session_id}' bound to remote conversation '{conversation_id}'"
+        )
         return session
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
-        return self._sessions.get(session_id)
+        if session_id not in self._sessions:
+            raise SessionNotFoundError(f"OpenHands session '{session_id}' not found.")
+        return self._sessions[session_id]
 
     def send_task(
         self,
@@ -178,95 +184,120 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         prompt: str,
         context: Optional[Dict[str, Any]] = None,
     ) -> TaskResult:
-        """Dispatch task to OpenHands conversation conforming to RemoteConversation protocol.
-
-        Protocol Flow:
-          1. POST /api/conversations/{id}/events  (User message event)
-          2. POST /api/conversations/{id}/run     (Trigger execution run)
-          3. GET  /api/conversations/{id}         (Poll / verify completion status)
-        """
-        session = self._sessions.get(session_id)
-        if not session:
-            raise SessionNotFoundError(f"Session with ID '{session_id}' not found.")
-
-        if not session.remote_conversation_id:
-            return TaskResult(
-                session_id=session_id,
-                success=False,
-                execution_status=ExecutionStatus.INFRASTRUCTURE_UNAVAILABLE,
-                failure_category=FailureCategory.NETWORK_CONNECTION,
-                error="Session has no active OpenHands conversation ID.",
-                retryable=True,
-            )
-
-        task_event = NormalizedEvent(
-            event_type=EventType.TASK_STARTED,
-            generation_id=session.config.generation_id,
-            agent_run_id=session.config.agent_run_id,
-            payload={"prompt": prompt, "context": context or {}},
-        )
-        session.add_event(task_event)
-        session.update_status(SessionStatus.RUNNING)
+        """Send a message to the OpenHands conversation and execute the agent run."""
+        session = self.get_session(session_id)
+        if not isinstance(session, OpenHandsAgentSession):
+            raise TaskExecutionError(f"Invalid session type for '{session_id}'.")
 
         conv_id = session.remote_conversation_id
+        if not conv_id:
+            raise TaskExecutionError(f"Session '{session_id}' has no active conversation ID.")
 
+        session.update_status(SessionStatus.RUNNING)
+
+        # 1. Preferred execution path: official SDK RemoteConversation object
+        if session.conversation_obj is not None and hasattr(session.conversation_obj, "send_message"):
+            try:
+                conv = session.conversation_obj
+                conv.send_message(prompt)
+                conv.run()
+
+                output = ""
+                artifacts = []
+                token_usage = {}
+
+                if hasattr(conv, "state") and hasattr(conv.state, "events"):
+                    for event in conv.state.events:
+                        norm = self.normalize_event(event, session.config)
+                        session.add_event(norm)
+                        if isinstance(event, MessageEvent) and getattr(event, "role", None) in ("assistant", "agent"):
+                            output = event.content or output
+                        elif hasattr(event, "output") and event.output:
+                            output = str(event.output)
+
+                if hasattr(conv, "state") and hasattr(conv.state, "stats"):
+                    stats = conv.state.stats
+                    if hasattr(stats, "model_dump"):
+                        token_usage = stats.model_dump()
+
+                session.update_status(SessionStatus.COMPLETED)
+                result = TaskResult(
+                    session_id=session_id,
+                    success=True,
+                    execution_status=ExecutionStatus.SUCCESS,
+                    failure_category=FailureCategory.NONE,
+                    output=output or "Execution completed.",
+                    artifacts=artifacts,
+                    token_usage=token_usage,
+                    metadata={"conversation_id": conv_id},
+                )
+                self._results[session_id] = result
+                return result
+            except Exception as sdk_exec_err:
+                logger.warning(f"SDK execution error, falling back to protocol handling: {sdk_exec_err}")
+
+        # 2. Protocol path: REST /api/conversations/{id}/events -> /run -> poll
         try:
-            # 1. Send message event per OpenHands v1.42.1 protocol
-            msg_payload = {
+            # Send message
+            message_payload = {
                 "type": "message",
                 "role": "user",
                 "content": prompt,
-                "context": context or {},
             }
-            msg_resp = self._client.post(
+            event_resp = self._client.post(
                 f"/api/conversations/{conv_id}/events",
-                json=msg_payload,
+                json=message_payload,
             )
-            if msg_resp.status_code not in (200, 201):
-                err_msg = f"Failed to submit message to OpenHands: HTTP {msg_resp.status_code} - {msg_resp.text}"
-                return TaskResult(
+            if event_resp.status_code not in (200, 201, 202):
+                err_msg = f"Failed to send message to OpenHands: HTTP {event_resp.status_code} - {event_resp.text}"
+                res = TaskResult(
                     session_id=session_id,
                     success=False,
                     execution_status=ExecutionStatus.AGENT_FAILED,
                     failure_category=FailureCategory.MODEL_ERROR,
                     error=err_msg,
                 )
+                self._results[session_id] = res
+                return res
 
-            # 2. Trigger run per OpenHands v1.42.1 protocol
+            # Trigger run
             run_resp = self._client.post(f"/api/conversations/{conv_id}/run")
             if run_resp.status_code not in (200, 201, 202):
                 err_msg = f"Failed to trigger execution run on OpenHands: HTTP {run_resp.status_code} - {run_resp.text}"
-                return TaskResult(
+                res = TaskResult(
                     session_id=session_id,
                     success=False,
                     execution_status=ExecutionStatus.AGENT_FAILED,
                     failure_category=FailureCategory.MODEL_ERROR,
                     error=err_msg,
                 )
+                self._results[session_id] = res
+                return res
 
-            # 3. Poll execution state until COMPLETED or timeout
+            # Poll status
+            import time
             max_wait_seconds = session.config.timeout_seconds
             poll_interval = 0.1
             elapsed = 0.0
             data = {}
 
-            import time
             while elapsed < max_wait_seconds:
                 state_resp = self._client.get(f"/api/conversations/{conv_id}")
                 if state_resp.status_code == 200:
                     data = state_resp.json()
-                    status = data.get("status", "").upper()
-                    if status in ("COMPLETED", "FAILED", "CANCELLED"):
+                    status = str(data.get("status") or data.get("execution_status") or "").upper()
+                    if status in ("COMPLETED", "FINISHED", "STOPPED", "FAILED", "CANCELLED"):
                         break
                 time.sleep(poll_interval)
                 elapsed += poll_interval
 
-            output = data.get("response") or data.get("output") or "Task completed by OpenHands agent."
-            token_usage = data.get("token_usage", {})
+            output = data.get("response") or data.get("output") or "Execution completed."
+            token_usage = data.get("token_usage") or data.get("stats", {})
             artifacts = data.get("artifacts", [])
 
             if data.get("status") == "FAILED":
-                return TaskResult(
+                session.update_status(SessionStatus.FAILED)
+                res = TaskResult(
                     session_id=session_id,
                     success=False,
                     execution_status=ExecutionStatus.AGENT_FAILED,
@@ -274,8 +305,11 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                     output=output,
                     error=data.get("error", "Agent execution failed."),
                 )
+                self._results[session_id] = res
+                return res
 
-            result = TaskResult(
+            session.update_status(SessionStatus.COMPLETED)
+            res = TaskResult(
                 session_id=session_id,
                 success=True,
                 execution_status=ExecutionStatus.SUCCESS,
@@ -285,183 +319,161 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 token_usage=token_usage,
                 metadata={"conversation_id": conv_id},
             )
-            session.update_status(SessionStatus.COMPLETED)
-            session.add_event(
-                NormalizedEvent(
-                    event_type=EventType.AGENT_COMPLETED,
-                    generation_id=session.config.generation_id,
-                    agent_run_id=session.config.agent_run_id,
-                    payload={"output": output, "success": True},
-                )
-            )
+            self._results[session_id] = res
+            return res
 
-        except (httpx.ConnectError, httpx.NetworkError) as exc:
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
+            session.update_status(SessionStatus.FAILED)
             err_msg = f"Infrastructure unavailable: could not contact OpenHands server: {exc}"
             logger.error(err_msg)
-            result = TaskResult(
+            res = TaskResult(
                 session_id=session_id,
                 success=False,
                 execution_status=ExecutionStatus.INFRASTRUCTURE_UNAVAILABLE,
                 failure_category=FailureCategory.NETWORK_CONNECTION,
-                error=err_msg,
                 retryable=True,
-            )
-            session.update_status(SessionStatus.FAILED)
-            session.add_event(
-                NormalizedEvent(
-                    event_type=EventType.SYSTEM_ERROR,
-                    generation_id=session.config.generation_id,
-                    agent_run_id=session.config.agent_run_id,
-                    payload={"error": err_msg, "retryable": True},
-                )
-            )
-        except httpx.TimeoutException as exc:
-            err_msg = f"Execution timed out communicating with OpenHands server: {exc}"
-            logger.error(err_msg)
-            result = TaskResult(
-                session_id=session_id,
-                success=False,
-                execution_status=ExecutionStatus.TIMEOUT,
-                failure_category=FailureCategory.TIMEOUT,
                 error=err_msg,
-                retryable=True,
             )
-            session.update_status(SessionStatus.FAILED)
+            self._results[session_id] = res
+            return res
 
-        session._result = result
-        return result
+    def get_result(self, session_id: str) -> TaskResult:
+        """Retrieve the latest task result for the session."""
+        if session_id in self._results:
+            return self._results[session_id]
+        session = self.get_session(session_id)
+        return TaskResult(
+            session_id=session_id,
+            success=session.status == SessionStatus.COMPLETED,
+            execution_status=ExecutionStatus.SUCCESS if session.status == SessionStatus.COMPLETED else ExecutionStatus.IDLE,
+        )
+
+    def cancel_execution(self, session_id: str) -> bool:
+        """Interrupt and cancel execution of an active OpenHands conversation."""
+        session = self.get_session(session_id)
+        if not isinstance(session, OpenHandsAgentSession) or not session.remote_conversation_id:
+            return False
+
+        # Preferred path: SDK object interrupt()
+        if session.conversation_obj is not None and hasattr(session.conversation_obj, "interrupt"):
+            try:
+                session.conversation_obj.interrupt()
+                session.update_status(SessionStatus.CANCELLED)
+                return True
+            except Exception as exc:
+                logger.warning(f"SDK interrupt failed, trying REST endpoint: {exc}")
+
+        # REST path: POST /api/conversations/{id}/interrupt
+        try:
+            resp = self._client.post(f"/api/conversations/{session.remote_conversation_id}/interrupt")
+            if resp.status_code in (200, 202, 204):
+                session.update_status(SessionStatus.CANCELLED)
+                return True
+        except Exception as exc:
+            logger.error(f"Failed to interrupt OpenHands conversation: {exc}")
+        return False
+
+    def close_session(self, session_id: str) -> bool:
+        """Close session and release underlying resources."""
+        session = self.get_session(session_id)
+        if isinstance(session, OpenHandsAgentSession):
+            if session.conversation_obj is not None and hasattr(session.conversation_obj, "close"):
+                try:
+                    session.conversation_obj.close()
+                except Exception as exc:
+                    logger.debug(f"Error during SDK conversation close: {exc}")
+            session.update_status(SessionStatus.CLOSED)
+            self._sessions.pop(session_id, None)
+            return True
+        return False
 
     def get_historical_events(self, session_id: str) -> List[NormalizedEvent]:
-        """Fetch historical events from session log and sync via /api/conversations/{id}/events/search."""
-        session = self._sessions.get(session_id)
-        if not session:
-            raise SessionNotFoundError(f"Session with ID '{session_id}' not found.")
+        """Fetch historical events from OpenHands events search endpoint."""
+        session = self.get_session(session_id)
+        if not isinstance(session, OpenHandsAgentSession) or not session.remote_conversation_id:
+            return []
 
-        if session.remote_conversation_id:
-            try:
-                # OpenHands v1.42.1 events search endpoint
-                response = self._client.get(
-                    f"/api/conversations/{session.remote_conversation_id}/events/search"
-                )
-                if response.status_code == 200:
-                    raw_events = response.json().get("events", [])
-                    for raw in raw_events:
-                        normalized = self._normalize_openhands_event(raw, session)
-                        if normalized:
-                            session.add_event(normalized)
-            except httpx.RequestError as exc:
-                logger.warning(f"Could not synchronize remote events from OpenHands: {exc}")
+        # If SDK conversation is available with cached events, return them
+        if session.conversation_obj is not None and hasattr(session.conversation_obj, "state"):
+            if hasattr(session.conversation_obj.state, "events"):
+                return [
+                    self.normalize_event(ev, session.config)
+                    for ev in session.conversation_obj.state.events
+                ]
 
-        return list(session._events)
+        # Otherwise query REST /api/conversations/{id}/events/search
+        try:
+            resp = self._client.get(f"/api/conversations/{session.remote_conversation_id}/events/search")
+            if resp.status_code == 200:
+                raw_events = resp.json()
+                items = raw_events if isinstance(raw_events, list) else raw_events.get("items", [])
+                return [self.normalize_event(item, session.config) for item in items]
+        except Exception as exc:
+            logger.warning(f"Failed to fetch historical events for '{session_id}': {exc}")
+        return []
 
     def observe_events(self, session_id: str) -> List[NormalizedEvent]:
-        """Alias for get_historical_events."""
+        """Retrieve all currently recorded events for a session."""
         return self.get_historical_events(session_id)
 
     async def subscribe_events(self, session_id: str) -> AsyncIterator[NormalizedEvent]:
-        """Asynchronously stream events for the active session."""
-        session = self._sessions.get(session_id)
-        if not session:
-            raise SessionNotFoundError(f"Session with ID '{session_id}' not found.")
+        """Stream events asynchronously for a given session."""
+        session = self.get_session(session_id)
+        events = self.get_historical_events(session_id)
+        for ev in events:
+            yield ev
 
-        for event in session._events:
-            await asyncio.sleep(0.01)
-            yield event
+    def normalize_event(
+        self,
+        raw_event: Any,
+        session_config: Optional[SessionConfig] = None,
+    ) -> NormalizedEvent:
+        """Map raw OpenHands event payloads or SDK objects into Tersuite NormalizedEvents."""
+        generation_id = session_config.generation_id if session_config else "gen-default"
+        agent_run_id = session_config.agent_run_id if session_config else "run-default"
+
+        if isinstance(raw_event, NormalizedEvent):
+            return raw_event
+
+        payload: Dict[str, Any] = {}
+        event_type = EventType.AGENT_THINKING
+
+        if hasattr(raw_event, "model_dump"):
+            payload = raw_event.model_dump()
+        elif isinstance(raw_event, dict):
+            payload = raw_event
+        else:
+            payload = {"raw": str(raw_event)}
+
+        raw_type = payload.get("type", "").lower()
+
+        if raw_type in ("action", "tool_call", "actionevent") or "action" in payload:
+            event_type = EventType.AGENT_TOOL_STARTED
+        elif raw_type in ("observation", "observationevent") or "observation" in payload:
+            event_type = EventType.AGENT_TOOL_FINISHED
+        elif raw_type in ("agenterror", "conversationerror", "error"):
+            event_type = EventType.AGENT_FAILED
+        elif raw_type in ("completed", "finish", "done"):
+            event_type = EventType.AGENT_COMPLETED
+        elif raw_type in ("interrupt", "interruptevent", "cancelled", "cancel"):
+            event_type = EventType.GENERATION_CANCELLED
+        elif raw_type == "started":
+            event_type = EventType.AGENT_STARTED
+        else:
+            event_type = EventType.AGENT_THINKING
+
+        return NormalizedEvent(
+            generation_id=generation_id,
+            agent_run_id=agent_run_id,
+            event_type=event_type,
+            payload=payload,
+        )
 
     def _normalize_openhands_event(
         self,
         raw_event: Any,
-        session: OpenHandsAgentSession,
-    ) -> Optional[NormalizedEvent]:
-        """Convert OpenHands SDK Event or raw JSON dict into Tersuite NormalizedEvent."""
-        if hasattr(raw_event, "__class__") and not isinstance(raw_event, dict):
-            # SDK Event object normalization
-            cls_name = raw_event.__class__.__name__
-            if "Action" in cls_name:
-                event_type = EventType.AGENT_TOOL_STARTED
-            elif "Observation" in cls_name:
-                event_type = EventType.AGENT_TOOL_FINISHED
-            elif "Interrupt" in cls_name:
-                event_type = EventType.GENERATION_CANCELLED
-            elif "Error" in cls_name:
-                event_type = EventType.AGENT_FAILED
-            else:
-                event_type = EventType.AGENT_THINKING
-
-            payload = getattr(raw_event, "model_dump", lambda: str(raw_event))()
-        else:
-            # Raw JSON event dictionary normalization
-            raw_dict = raw_event if isinstance(raw_event, dict) else {}
-            raw_type = str(raw_dict.get("type", "")).lower()
-
-            if "action" in raw_type:
-                event_type = EventType.AGENT_TOOL_STARTED
-            elif "observation" in raw_type:
-                event_type = EventType.AGENT_TOOL_FINISHED
-            elif "interrupt" in raw_type:
-                event_type = EventType.GENERATION_CANCELLED
-            elif "error" in raw_type:
-                event_type = EventType.AGENT_FAILED
-            else:
-                event_type = EventType.AGENT_THINKING
-
-            payload = raw_dict
-
-        return NormalizedEvent(
-            event_type=event_type,
-            generation_id=session.config.generation_id,
-            agent_run_id=session.config.agent_run_id,
-            payload=payload if isinstance(payload, dict) else {"data": str(payload)},
-        )
-
-    def get_result(self, session_id: str) -> TaskResult:
-        session = self._sessions.get(session_id)
-        if not session:
-            raise SessionNotFoundError(f"Session with ID '{session_id}' not found.")
-        if not session._result:
-            return TaskResult(
-                session_id=session_id,
-                success=False,
-                execution_status=ExecutionStatus.PENDING,
-                output="No task result recorded.",
-            )
-        return session._result
-
-    def cancel_execution(self, session_id: str) -> bool:
-        """Interrupt conversation execution per OpenHands v1.42.1 protocol."""
-        session = self._sessions.get(session_id)
-        if not session:
-            raise SessionNotFoundError(f"Session with ID '{session_id}' not found.")
-
-        if session.remote_conversation_id:
-            try:
-                # OpenHands v1.42.1 interrupt endpoint
-                self._client.post(
-                    f"/api/conversations/{session.remote_conversation_id}/interrupt"
-                )
-            except httpx.RequestError as exc:
-                logger.warning(f"Failed to send remote interrupt to OpenHands: {exc}")
-
-        session.update_status(SessionStatus.CANCELLED)
-        session.add_event(
-            NormalizedEvent(
-                event_type=EventType.GENERATION_CANCELLED,
-                generation_id=session.config.generation_id,
-                agent_run_id=session.config.agent_run_id,
-                payload={"reason": "User requested interruption."},
-            )
-        )
-        return True
-
-    def close_session(self, session_id: str) -> bool:
-        session = self._sessions.get(session_id)
-        if session and session.conversation_obj and hasattr(session.conversation_obj, "close"):
-            try:
-                session.conversation_obj.close()
-            except Exception:
-                pass
-
-        if session_id in self._sessions:
-            del self._sessions[session_id]
-            return True
-        return False
+        session: Optional[AgentSession] = None,
+    ) -> NormalizedEvent:
+        """Compatibility helper for event normalization."""
+        config = session.config if session else None
+        return self.normalize_event(raw_event, config)

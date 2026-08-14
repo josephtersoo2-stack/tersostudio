@@ -76,3 +76,8 @@ venv.bak/
 # Operating System
 .DS_Store
 Thumbs.db
+
+# OpenHands agent workspaces & local artifacts
+workspace/
+logs/
+
