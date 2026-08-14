@@ -44,6 +44,9 @@ INSTALLED_APPS = [
     "apps.core.apps.CoreConfig",
     "apps.accounts.apps.AccountsConfig",
     "apps.realtime.apps.RealtimeConfig",
+    # Domain Apps (Phase 2)
+    "apps.projects.apps.ProjectsConfig",
+    "apps.generations.apps.GenerationsConfig",
 ]
 
 MIDDLEWARE = [
@@ -232,3 +235,8 @@ LOGGING = {
         },
     },
 }
+
+# Media and Durable Artifact Storage
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+

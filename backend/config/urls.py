@@ -7,4 +7,6 @@ urlpatterns = [
     # API v1 versioning
     path("api/v1/health/", include("apps.core.urls")),
     path("api/v1/auth/", include("apps.accounts.urls")),
+    path("api/v1/projects/", include("apps.projects.urls")),
+    path("api/v1/", include("apps.generations.urls")),
 ]
