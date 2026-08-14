@@ -7,7 +7,7 @@ from .models import AgentRun, Artifact, Generation, GenerationStep, Workspace
 
 
 class ArtifactSerializer(serializers.ModelSerializer):
-    """Serializer for Artifact metadata and attributes."""
+    """Serializer for Artifact metadata and attributes (Read-Only)."""
 
     class Meta:
         model = Artifact
@@ -27,19 +27,11 @@ class ArtifactSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "size_bytes",
-            "checksum_sha256",
-            "storage_backend",
-            "storage_key",
-            "created_at",
-            "updated_at",
-        ]
+        read_only_fields = fields
 
 
 class WorkspaceSerializer(serializers.ModelSerializer):
-    """Serializer for Workspace inspection."""
+    """Serializer for Workspace inspection (Read-Only)."""
 
     class Meta:
         model = Workspace
@@ -54,15 +46,11 @@ class WorkspaceSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "created_at",
-            "updated_at",
-        ]
+        read_only_fields = fields
 
 
 class AgentRunSerializer(serializers.ModelSerializer):
-    """Serializer for AgentRun execution attempts."""
+    """Serializer for AgentRun execution attempts (Read-Only)."""
 
     class Meta:
         model = AgentRun
@@ -85,23 +73,11 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "created_at",
-            "updated_at",
-        ]
-
-    def create(self, validated_data):
-        """Auto-increment run_number for step if not specified."""
-        step = validated_data.get("step")
-        if step and "run_number" not in validated_data:
-            last_run = step.runs.order_by("-run_number").first()
-            validated_data["run_number"] = (last_run.run_number + 1) if last_run else 1
-        return super().create(validated_data)
+        read_only_fields = fields
 
 
 class GenerationStepSerializer(serializers.ModelSerializer):
-    """Serializer for GenerationStep work units with nested run attempts."""
+    """Serializer for GenerationStep work units with nested run attempts (Read-Only)."""
 
     runs = AgentRunSerializer(many=True, read_only=True)
     runs_count = serializers.SerializerMethodField()
@@ -125,13 +101,7 @@ class GenerationStepSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "runs",
-            "runs_count",
-            "created_at",
-            "updated_at",
-        ]
+        read_only_fields = fields
 
     def get_runs_count(self, obj) -> int:
         return obj.runs.count()
@@ -207,20 +177,7 @@ class GenerationDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "user",
-            "status",
-            "steps",
-            "workspace",
-            "artifacts",
-            "completed_at",
-            "cancelled_at",
-            "failed_at",
-            "paused_at",
-            "created_at",
-            "updated_at",
-        ]
+        read_only_fields = fields
 
 
 class GenerationCreateSerializer(serializers.ModelSerializer):
@@ -253,14 +210,15 @@ class GenerationCreateSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         project = validated_data.pop("project_id")
-        user = self.context["request"].user
+        user = project.user
         generation = Generation.objects.create(
             project=project,
             user=user,
             **validated_data,
         )
 
-        # Automatically provision initial workspace record
+        # Provision initial workspace metadata (metadata initialization only;
+        # does not provision runtime Docker containers or WordPress instances)
         Workspace.objects.create(
             generation=generation,
             workspace_path=f"workspaces/{generation.id}",
@@ -268,6 +226,14 @@ class GenerationCreateSerializer(serializers.ModelSerializer):
         )
 
         return generation
+
+
+class GenerationUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating allowed Generation fields (metadata only)."""
+
+    class Meta:
+        model = Generation
+        fields = ["metadata"]
 
 
 class StateTransitionRequestSerializer(serializers.Serializer):

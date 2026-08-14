@@ -4,8 +4,8 @@ from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from apps.generations.enums import AgentRunStatus, GenerationStatus, StepStatus
-from apps.generations.models import AgentRun, Generation, GenerationStep, Workspace
+from apps.generations.enums import AgentRunStatus, ArtifactType, GenerationStatus, StepStatus
+from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep, Workspace
 from apps.projects.models import Project
 
 User = get_user_model()
@@ -159,3 +159,126 @@ class GenerationDomainTests(TestCase):
         self.assertEqual(len(response.data["steps"][0]["runs"]), 1)
         self.assertIsNotNone(response.data["workspace"])
         self.assertIn("artifacts", response.data)
+
+    def test_generation_cannot_be_deleted_via_api(self):
+        """Verify public API disallows destructive DELETE on Generation records (HTTP 405)."""
+        self.client.force_authenticate(user=self.user)
+        response = self.client.delete(f"/api/v1/generations/{self.generation.id}/")
+
+        self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertTrue(Generation.objects.filter(id=self.generation.id).exists())
+
+    def test_generation_ownership_cannot_diverge_from_project_owner(self):
+        """Verify Generation.user is always strictly derived from Project.user."""
+        other_user = User.objects.create_user(
+            email="impostor@tersuite.com",
+            password="StrongPassword123!",
+        )
+
+        # Attempt creating generation setting user to other_user on project owned by self.user
+        gen = Generation(
+            project=self.project,
+            user=other_user,  # Intentionally diverging
+            prompt="Attempting to hijack ownership.",
+        )
+        gen.save()
+
+        self.assertEqual(gen.user, self.user)
+        self.assertEqual(gen.user, self.project.user)
+
+    def test_generation_steps_are_read_only_via_api(self):
+        """Verify clients cannot create, update, or delete GenerationSteps via public API."""
+        step = GenerationStep.objects.create(
+            generation=self.generation,
+            step_number=1,
+            name="Architecture",
+            agent_role="architect",
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        # POST
+        post_resp = self.client.post("/api/v1/steps/", {"name": "Fabricated Step"}, format="json")
+        self.assertEqual(post_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # PATCH
+        patch_resp = self.client.patch(f"/api/v1/steps/{step.id}/", {"name": "Tampered"}, format="json")
+        self.assertEqual(patch_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # DELETE
+        del_resp = self.client.delete(f"/api/v1/steps/{step.id}/")
+        self.assertEqual(del_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_agent_runs_are_read_only_via_api(self):
+        """Verify clients cannot create, update, or delete AgentRuns via public API."""
+        step = GenerationStep.objects.create(
+            generation=self.generation,
+            step_number=1,
+            name="Architecture",
+            agent_role="architect",
+        )
+        run = AgentRun.objects.create(
+            step=step,
+            run_number=1,
+            prompt="Run prompt",
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        # POST
+        post_resp = self.client.post("/api/v1/runs/", {"prompt": "Fabricated Run"}, format="json")
+        self.assertEqual(post_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # PATCH
+        patch_resp = self.client.patch(f"/api/v1/runs/{run.id}/", {"output": "Fake output"}, format="json")
+        self.assertEqual(patch_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # DELETE
+        del_resp = self.client.delete(f"/api/v1/runs/{run.id}/")
+        self.assertEqual(del_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_workspaces_and_artifacts_are_read_only_via_api(self):
+        """Verify clients cannot POST, PATCH, or DELETE Workspaces and Artifacts."""
+        workspace = Workspace.objects.create(
+            generation=self.generation,
+            workspace_path=f"workspaces/{self.generation.id}",
+        )
+        from apps.generations.enums import ArtifactType
+        artifact = Artifact.objects.create(
+            generation=self.generation,
+            name="plugin.php",
+            file_path="plugin.php",
+            artifact_type=ArtifactType.SOURCE_CODE,
+            storage_key="test-key",
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        # Workspace mutations disallowed
+        self.assertEqual(
+            self.client.post("/api/v1/workspaces/", {}).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.patch(f"/api/v1/workspaces/{workspace.id}/", {}).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/v1/workspaces/{workspace.id}/").status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+        # Artifact mutations disallowed
+        self.assertEqual(
+            self.client.post("/api/v1/artifacts/", {}).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.patch(f"/api/v1/artifacts/{artifact.id}/", {}).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/v1/artifacts/{artifact.id}/").status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+

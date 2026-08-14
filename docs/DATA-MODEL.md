@@ -25,27 +25,51 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
                ▼                              ▼
 ┌─────────────────────────────┐┌──────────────────────────────┐
 │       GenerationStep        ││          Workspace           │
-│   (Logical Work Unit/Spec)  ││   (Mounted Working Dir)      │
+│   (Logical Work Unit/Spec)  ││   (Metadata Initialization)  │
+│         [READ-ONLY]         ││         [READ-ONLY]          │
 └──────────────┬──────────────┘└──────────────────────────────┘
                │ 1:N
                ▼
 ┌─────────────────────────────┐
 │          AgentRun           │
 │   (Physical Attempt/SDK)    │
+│         [READ-ONLY]         │
 └──────────────┬──────────────┘
                │ 1:N
                ▼
 ┌─────────────────────────────┐
 │          Artifact           │
 │  (Durable Files & Packages) │
+│    [READ-ONLY / DOWNLOAD]   │
 └─────────────────────────────┘
 ```
 
 ---
 
-## 2. Table Specifications & Schema Definitions
+## 2. Core Domain Principles & Constraints
 
-### 2.1. `accounts_user`
+1. **Durable Generation Retention**:
+   - Generation history is permanent. The public REST API does **not** expose destructive `DELETE` endpoints for Generations.
+   - Generations transition to terminal states (`COMPLETED`, `CANCELLED`, `FAILED`) while preserving all associated steps, runs, and artifacts.
+
+2. **Read-Only Child Resources**:
+   - `GenerationStep`, `AgentRun`, `Workspace`, and `Artifact` are **strictly read-only** across the public REST API (`ReadOnlyModelViewSet`).
+   - Clients cannot fabricate runs, step statuses, token usage metrics, or synthetic artifacts.
+   - Internal pipeline services and domain state machines manage child records.
+
+3. **Authoritative Ownership Alignment**:
+   - `Generation.user` is derived directly from `Project.user` (`generation.user = project.user`).
+   - The ownership of a Generation can never diverge from the Project owner.
+
+4. **Workspace Metadata Initialization**:
+   - A `Workspace` record is initialized when a `Generation` is created to track directory paths and storage types.
+   - **Crucial Clarification**: Initial workspace creation is **metadata initialization only**. It does **not** launch Docker containers, provision PHP/WordPress instances, or spin up live execution sandboxes (which belongs to Phase 6 Sandbox QA).
+
+---
+
+## 3. Table Specifications & Schema Definitions
+
+### 3.1. `accounts_user`
 - **Model**: `apps.accounts.models.User`
 - **Inheritance**: `AbstractBaseUser`, `PermissionsMixin`, `TimeStampedModel`
 
@@ -65,7 +89,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-### 2.2. `projects_project`
+### 3.2. `projects_project`
 - **Model**: `apps.projects.models.Project`
 - **Inheritance**: `TimeStampedModel`
 
@@ -89,7 +113,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-### 2.3. `generations_generation`
+### 3.3. `generations_generation`
 - **Model**: `apps.generations.models.Generation`
 - **Inheritance**: `TimeStampedModel`
 
@@ -97,7 +121,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 |---|---|---|---|---|
 | `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
 | `project_id` | `UUID` | No | — | Foreign Key $\rightarrow$ `projects_project.id` (ON DELETE CASCADE) |
-| `user_id` | `UUID` | No | — | Foreign Key $\rightarrow$ `accounts_user.id` (ON DELETE CASCADE) |
+| `user_id` | `UUID` | No | — | Foreign Key $\rightarrow$ `accounts_user.id` (Strictly derived from project) |
 | `prompt` | `TEXT` | No | — | User prompt / initial instructions |
 | `status` | `VARCHAR(30)` | No | `"DRAFT"` | Lifecycle state machine status (Indexed) |
 | `current_step_number` | `INTEGER` | No | `0` | Active step sequence index |
@@ -118,7 +142,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-### 2.4. `generations_generationstep`
+### 3.4. `generations_generationstep`
 - **Model**: `apps.generations.models.GenerationStep`
 - **Inheritance**: `TimeStampedModel`
 
@@ -143,7 +167,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-### 2.5. `generations_agentrun`
+### 3.5. `generations_agentrun`
 - **Model**: `apps.generations.models.AgentRun`
 - **Inheritance**: `TimeStampedModel`
 
@@ -172,7 +196,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-### 2.6. `generations_workspace`
+### 3.6. `generations_workspace`
 - **Model**: `apps.generations.models.Workspace`
 - **Inheritance**: `TimeStampedModel`
 
@@ -190,7 +214,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-### 2.7. `generations_artifact`
+### 3.7. `generations_artifact`
 - **Model**: `apps.generations.models.Artifact`
 - **Inheritance**: `TimeStampedModel`
 
@@ -216,7 +240,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-## 3. Generation State Machine & Transitions
+## 4. Generation State Machine & Transitions
 
 ```
                     ┌──────────────┐
@@ -271,7 +295,7 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 
 ---
 
-## 4. Artifact Storage Architecture
+## 5. Artifact Storage Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

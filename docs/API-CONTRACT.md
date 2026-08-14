@@ -88,6 +88,8 @@ Accept: application/json
 
 ## 3. Generations API (`/api/v1/generations/`)
 
+> **Durable Generation Retention**: Generation records cannot be deleted via the public REST API (`DELETE /api/v1/generations/{id}/` returns `405 Method Not Allowed`). All generation history remains durable.
+
 ### 3.1. List Generations
 - **Endpoint**: `GET /api/v1/generations/`
 - **Query Parameters**:
@@ -129,7 +131,8 @@ Accept: application/json
     "metadata": {"priority": "high"}
   }
   ```
-- **Response**: `201 Created` (auto-creates workspace)
+- **Response**: `201 Created`  
+  *(Note: Auto-initializes Workspace metadata. This does NOT provision live Docker containers or runtime sandboxes).*
 
 ### 3.3. Retrieve Generation Details
 - **Endpoint**: `GET /api/v1/generations/{id}/`
@@ -154,7 +157,9 @@ Accept: application/json
 
 ---
 
-## 4. Generation Steps API (`/api/v1/steps/`)
+## 4. Generation Steps API (`/api/v1/steps/`) — Read-Only
+
+> **Client Mutation Disallowed**: `POST`, `PUT`, `PATCH`, and `DELETE` on `/api/v1/steps/` return `405 Method Not Allowed`. Steps are managed exclusively by internal orchestrators.
 
 ### 4.1. List Steps
 - **Endpoint**: `GET /api/v1/steps/?generation_id={generation_id}`
@@ -166,7 +171,9 @@ Accept: application/json
 
 ---
 
-## 5. Agent Runs API (`/api/v1/runs/`)
+## 5. Agent Runs API (`/api/v1/runs/`) — Read-Only
+
+> **Client Mutation Disallowed**: `POST`, `PUT`, `PATCH`, and `DELETE` on `/api/v1/runs/` return `405 Method Not Allowed`. Runs are managed exclusively by the agent execution engine.
 
 ### 5.1. List Runs
 - **Endpoint**: `GET /api/v1/runs/?step_id={step_id}`
@@ -195,7 +202,9 @@ Accept: application/json
 
 ---
 
-## 6. Workspaces API (`/api/v1/workspaces/`)
+## 6. Workspaces API (`/api/v1/workspaces/`) — Read-Only
+
+> **Client Mutation Disallowed**: `POST`, `PUT`, `PATCH`, and `DELETE` return `405 Method Not Allowed`.
 
 ### 6.1. Retrieve Workspace
 - **Endpoint**: `GET /api/v1/workspaces/{id}/`
@@ -204,7 +213,9 @@ Accept: application/json
 
 ---
 
-## 7. Artifacts API (`/api/v1/artifacts/`)
+## 7. Artifacts API (`/api/v1/artifacts/`) — Read-Only / Download
+
+> **Client Mutation Disallowed**: Arbitrary artifact creation and modification (`POST`, `PUT`, `PATCH`, `DELETE`) return `405 Method Not Allowed`.
 
 ### 7.1. List Artifacts
 - **Endpoint**: `GET /api/v1/artifacts/?generation_id={generation_id}`

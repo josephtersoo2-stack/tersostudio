@@ -124,6 +124,12 @@ class Generation(TimeStampedModel):
     def __str__(self) -> str:
         return f"Generation {self.id} [{self.status}] for Project {self.project.name}"
 
+    def save(self, *args, **kwargs):
+        """Ensure Generation owner is always strictly derived from Project owner."""
+        if self.project_id:
+            self.user = self.project.user
+        super().save(*args, **kwargs)
+
 
 class GenerationStep(TimeStampedModel):
     """Represents a discrete logical work unit or milestone in a Generation."""
