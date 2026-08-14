@@ -1,0 +1,34 @@
+# Core Framework
+django>=5.0.2,<5.2.0
+djangorestframework>=3.15.0
+django-cors-headers>=4.3.1
+
+# Database
+psycopg[binary]>=3.1.18
+dj-database-url>=2.1.0
+
+# Async & Realtime
+channels>=4.0.0
+channels-redis>=4.2.0
+daphne>=4.1.0
+
+# Tasks & Caching
+celery>=5.3.6
+redis>=5.0.3
+
+# Configuration & Validation
+python-dotenv>=1.0.1
+pydantic>=2.6.0
+
+# HTTP & SDK Client
+requests>=2.31.0
+httpx>=0.27.0
+
+# OpenHands Integration Boundary (Pinned SDK & Tools for Python >= 3.12)
+openhands-sdk>=1.40.0; python_version >= "3.12"
+openhands-tools>=1.40.0; python_version >= "3.12"
+
+# Testing & Dev
+pytest>=8.0.0
+pytest-django>=4.8.0
+pytest-asyncio>=0.23.5
