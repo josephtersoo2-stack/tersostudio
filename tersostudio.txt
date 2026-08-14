@@ -1,0 +1,1263 @@
+Tersuite AI Studio — Full Implementation Roadmap
+The final system we are building
+
+At the end, the architecture should look like this:
+
+                              USER
+                                │
+                                ▼
+                     TERSUITE WORDPRESS STUDIO
+                                │
+                                ▼
+                         Django REST API
+                                │
+       ┌────────────────────────┼─────────────────────────┐
+       │                        │                         │
+       ▼                        ▼                         ▼
+   Identity                  Projects                 Credits
+   Users                     Generations              Billing
+   Roles                     Files                    Usage
+       │                        │                         │
+       └────────────────────────┬─────────────────────────┘
+                                ▼
+                       TERSUITE INTELLIGENCE
+                                │
+          ┌─────────────────────┼─────────────────────┐
+          ▼                     ▼                     ▼
+   WordPress Knowledge    Domain Knowledge      Project Memory
+          │                     │                     │
+          └─────────────────────┼─────────────────────┘
+                                ▼
+                      FEATURE DISCOVERY ENGINE
+                                │
+                                ▼
+                         USER APPROVAL
+                                │
+                                ▼
+                          COORDINATOR
+                                │
+                                ▼
+                            PLANNER
+                                │
+               ┌────────────────┼────────────────┐
+               ▼                ▼                ▼
+          WP ARCHITECT      DOMAIN AGENT       UX AGENT
+               │                │                │
+               └────────────────┼────────────────┘
+                                ▼
+                             CODER
+                                │
+                         ┌──────┴──────┐
+                         ▼             ▼
+                       CRITIC       SECURITY
+                         │             │
+                         └──────┬──────┘
+                                ▼
+                              TEST
+                                │
+                                ▼
+                       WORDPRESS SANDBOX
+                                │
+                     ┌──────────┴──────────┐
+                     ▼                     ▼
+                FUNCTIONAL QA         SECURITY QA
+                     │                     │
+                     └──────────┬──────────┘
+                                ▼
+                           PACKAGE ZIP
+                                │
+                                ▼
+                           USER DELIVERY
+
+OpenHands sits beneath the Tersuite intelligence/business layers as the agent execution engine, not as the product itself. Its SDK explicitly supports programmatic agents, tools, conversations, workspaces and remote Agent Server execution.
+
+PHASE 0 — Architecture Freeze
+
+Before writing production code, we establish the contracts.
+
+Deliverables
+
+Create the master technical documents:
+
+docs/
+├── SYSTEM-ARCHITECTURE.md
+├── MODULE-MAP.md
+├── DATA-MODEL.md
+├── AGENT-ARCHITECTURE.md
+├── OPENHANDS-INTEGRATION.md
+├── KNOWLEDGE-ARCHITECTURE.md
+├── GENERATION-LIFECYCLE.md
+├── WORDPRESS-SANDBOX.md
+├── API-CONTRACT.md
+├── EVENT-CONTRACT.md
+├── SECURITY-ARCHITECTURE.md
+└── TESTING-STRATEGY.md
+
+Also define the non-negotiable rule:
+
+No module can silently invent its own architecture or bypass established contracts.
+
+That is especially important because you want this project to become much larger than the earlier backend.
+
+Exit condition
+
+We can draw the entire system from database → API → agent → sandbox → ZIP without architectural gaps.
+
+PHASE 1 — New Django Foundation
+
+Start a completely new backend repository.
+
+Recommended base:
+
+Python
+Django
+Django REST Framework
+PostgreSQL
+Redis
+Celery
+Django Channels
+OpenHands SDK
+OpenHands Agent Server
+Docker
+
+Do not copy the previous backend's implementation. Carry forward useful requirements and lessons, not technical debt.
+
+Core Django modules
+
+I would initially organize it approximately as:
+
+backend/
+├── config/
+├── apps/
+│
+├── accounts/
+├── organizations/
+├── projects/
+├── generations/
+├── agents/
+├── workflows/
+├── knowledge/
+├── specifications/
+├── workspaces/
+├── artifacts/
+├── usage/
+├── credits/
+├── subscriptions/
+├── providers/
+├── notifications/
+├── audit/
+├── logs/
+└── realtime/
+Exit condition
+
+The backend runs cleanly with:
+
+Django
+PostgreSQL
+Redis
+Celery
+Channels
+
+and has authentication, database migrations, health checks, API versioning, structured configuration and test infrastructure.
+
+PHASE 2 — Identity, Projects and Generation Model
+
+Before agents, we need a reliable data foundation.
+
+Core objects
+User
+Organization
+Project
+Generation
+GenerationStep
+AgentRun
+Artifact
+Workspace
+Specification
+KnowledgeSource
+UsageRecord
+CreditTransaction
+
+A generation should have a lifecycle such as:
+
+DRAFT
+↓
+SPECIFICATION
+↓
+APPROVED
+↓
+PLANNING
+↓
+BUILDING
+↓
+TESTING
+↓
+REVIEW
+↓
+PACKAGING
+↓
+COMPLETED
+
+And failures:
+
+FAILED
+CANCELLED
+PAUSED
+RETRYING
+Exit condition
+
+We can create a project through the API and create a generation tied to it with complete state tracking.
+
+PHASE 3 — OpenHands Integration
+
+This is our first major engineering milestone.
+
+We do not yet build the WordPress intelligence.
+
+First prove that Tersuite can control OpenHands reliably.
+
+OpenHands provides:
+
+Agent
+Conversation
+Tools
+Context
+Subagents
+Delegation
+Workspace
+Agent Server
+
+and remote conversation/workspace implementations already exist in the SDK.
+
+Build
+Tersuite Generation
+        ↓
+OpenHands Adapter
+        ↓
+Agent Server
+        ↓
+Agent
+        ↓
+Workspace
+
+Create our own abstraction:
+
+TersuiteAgentRuntime
+
+so the rest of Tersuite never depends directly on OpenHands internals.
+
+That is critical.
+
+Instead of:
+
+from openhands....
+
+everywhere, we want:
+
+Tersuite
+   ↓
+AgentRuntime interface
+   ↓
+OpenHands implementation
+
+Later we can upgrade OpenHands without rewriting the whole platform.
+
+Exit condition
+
+A Django API call can:
+
+create a workspace
+create an OpenHands conversation
+launch an agent
+send a task
+observe events
+receive completion
+collect generated files
+persist the generation record
+PHASE 4 — Real-Time Agent Event System
+
+Your WordPress interface needs to see what's happening.
+
+We already have Django Channels in the intended architecture.
+
+Create a normalized event model:
+
+generation.created
+generation.started
+
+
+agent.started
+agent.thinking
+agent.tool_started
+agent.tool_finished
+agent.waiting
+agent.completed
+agent.failed
+
+
+task.created
+task.started
+task.completed
+
+
+workspace.created
+workspace.destroyed
+
+
+test.started
+test.failed
+test.passed
+
+
+review.started
+review.failed
+review.passed
+
+
+artifact.created
+generation.completed
+generation.failed
+
+OpenHands has an event/conversation architecture that can serve as the source, but Tersuite should normalize it into its own event contract.
+
+Exit condition
+
+A browser can watch an entire generation live.
+
+PHASE 5 — WordPress Engineering Knowledge System
+
+This is where Tersuite begins becoming unique.
+
+We create a knowledge architecture rather than dumping documents into prompts.
+
+knowledge/
+├── wordpress/
+├── woocommerce/
+├── security/
+├── plugin-architecture/
+├── database/
+├── admin-ui/
+├── frontend/
+├── testing/
+├── performance/
+└── domains/
+    ├── affiliate/
+    ├── membership/
+    ├── ecommerce/
+    ├── booking/
+    ├── crm/
+    ├── lms/
+    └── ...
+
+Each knowledge unit should contain structured information:
+
+Concept
+Category
+Description
+Rules
+Patterns
+Examples
+Dependencies
+Constraints
+Anti-patterns
+Security considerations
+Compatibility considerations
+Sources
+Confidence
+
+OpenHands' skill/context system gives us a natural execution mechanism for activating relevant knowledge per agent.
+
+Exit condition
+
+Given:
+
+“Build an affiliate plugin”
+
+Tersuite can identify:
+
+WordPress
++
+Affiliate
++
+possibly WooCommerce
++
+possibly Membership
+
+and retrieve the appropriate knowledge sets.
+
+PHASE 6 — Professional Plugin Knowledge Extraction Pipeline
+
+This is your idea about learning from serious plugins.
+
+We create a Plugin Knowledge Analyzer.
+
+When we legitimately have a plugin/source/documentation available, the analyzer extracts:
+
+Product identity
+Feature inventory
+Feature relationships
+User workflows
+Business rules
+Roles/permissions
+Admin architecture
+Frontend UX patterns
+Data model concepts
+WordPress patterns
+Security patterns
+Database patterns
+REST/API patterns
+Integrations
+Settings
+State machines
+Notifications
+Extensibility
+Performance
+Compatibility
+Testing
+Error handling
+Installation
+Migration
+Uninstall
+Documentation
+Commercial/product patterns
+
+But the output becomes generalized domain knowledge, not a copying engine.
+
+SOURCE
+  ↓
+ANALYZE
+  ↓
+GENERALIZE
+  ↓
+NORMALIZE
+  ↓
+KNOWLEDGE RECORD
+  ↓
+DOMAIN KNOWLEDGE BASE
+Multiple sources
+
+Eventually:
+
+10 affiliate plugins
+       ↓
+Common capabilities
+Unique capabilities
+Advanced capabilities
+Industry patterns
+       ↓
+Affiliate Domain Model
+
+This becomes the foundation for feature discovery.
+
+Exit condition
+
+Given several professional affiliate products, Tersuite can generate a consolidated affiliate feature model rather than merely summarizing one plugin.
+
+PHASE 7 — Feature Discovery Engine
+
+This is one of the most important modules in the entire platform.
+
+User:
+
+“I need an affiliate membership plugin.”
+
+Tersuite does not immediately code.
+
+Instead:
+
+User Request
+    ↓
+Intent Analysis
+    ↓
+Domain Classification
+    ↓
+Knowledge Retrieval
+    ↓
+Professional Feature Discovery
+    ↓
+Feature Grouping
+    ↓
+Recommendation
+
+The result should say something like:
+
+Affiliate Membership Plugin
+
+
+87 potential capabilities identified
+
+
+61 recommended
+15 advanced
+11 optional
+
+Then organize them by module.
+
+Affiliate Management
+Referral Engine
+Commission Engine
+Membership
+Payouts
+Fraud Protection
+WooCommerce
+Analytics
+Notifications
+Admin
+Developer API
+User controls
+
+The user should be able to:
+
+✓ Approve
+✗ Remove
+＋ Add
+✎ Modify
+↕ Reorder
+
+Only then do we produce the final specification.
+
+Exit condition
+
+A user can transform a vague request into a complete approved software specification without any code being generated yet.
+
+PHASE 8 — Specification Engine
+
+The approved feature set becomes a formal ProductSpecification.
+
+It should contain:
+
+Product objective
+Target users
+Feature list
+Business rules
+Roles
+User workflows
+Admin workflows
+Data requirements
+Integrations
+API requirements
+Security requirements
+Compatibility
+Performance requirements
+Testing requirements
+Acceptance criteria
+Non-functional requirements
+
+This is where your product specification skill becomes important: we want Tersuite to learn to turn vague ideas into precise engineering contracts, not just prompts.
+
+Exit condition
+
+Every generation has a versioned, human-approved specification.
+
+PHASE 9 — Tersuite Coordinator
+
+Now we build our actual orchestration layer.
+
+The Coordinator is not OpenHands itself.
+
+It is Tersuite's business-level controller.
+
+Coordinator
+│
+├── validates specification
+├── determines workflow
+├── chooses agents
+├── chooses knowledge
+├── chooses models
+├── allocates workspace
+├── controls approvals
+└── tracks generation
+
+OpenHands then executes the agent work.
+
+Exit condition
+
+A generation can be driven by an explicit production workflow rather than one giant prompt.
+
+PHASE 10 — Tersuite WordPress Agent Team
+
+Initial agents:
+
+1. Coordinator
+2. Feature Discovery Agent
+3. Planner
+4. WordPress Architect
+5. Domain Specialist
+6. UX/UI Agent
+7. Coder
+8. Security Agent
+9. QA Agent
+10. Reviewer
+11. Sandbox Agent
+12. Packaging Agent
+
+Domain specialists are dynamically selected.
+
+For example:
+
+Affiliate generation:
+Affiliate Specialist
+
+
+Membership generation:
+Membership Specialist
+
+
+WooCommerce generation:
+WooCommerce Specialist
+
+
+Booking generation:
+Booking Specialist
+
+OpenHands' dedicated subagent/delegate/task facilities make this approach realistic without recreating agent delegation ourselves.
+
+PHASE 11 — Model & Provider Router
+
+Tersuite needs its own provider registry.
+
+Provider
+Model
+Capabilities
+Pricing
+Context window
+Tool support
+Vision
+Reasoning
+Availability
+
+Then agent-level routing:
+
+Coordinator → reasoning model
+Planner → reasoning model
+Architect → strong coding model
+Coder → coding model
+Security → security/reasoning model
+Reviewer → reasoning model
+
+OpenHands already has an LLM layer/router, but Tersuite should own the commercial policy and model selection logic.
+
+PHASE 12 — WordPress Sandbox
+
+This is one of the biggest engineering components.
+
+A generated plugin must not simply be judged by:
+
+“The AI says it works.”
+
+We create isolated environments:
+
+Docker
+│
+├── WordPress
+├── PHP
+├── MySQL/MariaDB
+├── WP-CLI
+└── WooCommerce when needed
+
+Potential profiles:
+
+WP Core
+WP + WooCommerce
+WP + Membership
+WP + WooCommerce + Membership
+PHP compatibility profile
+
+OpenHands already has Docker and other workspace implementations to build upon.
+
+Exit condition
+
+Tersuite can install a generated plugin inside a disposable WordPress environment and run commands/tests against it.
+
+PHASE 13 — WordPress QA Engine
+
+We need automated tests beyond generic Python/unit tests.
+
+For generated plugins:
+
+Plugin activation
+Plugin deactivation
+Admin page loading
+Frontend page loading
+Database migration
+Settings save
+Permissions
+Nonces
+REST API
+AJAX
+Shortcodes
+Blocks
+WooCommerce integration
+Refund flows
+Invalid input
+Unauthorized access
+Multisite where relevant
+Uninstall
+
+For an affiliate plugin:
+
+Affiliate registration
+Referral tracking
+Commission creation
+Commission reversal
+Payout request
+Payout approval
+Fraud handling
+Coupon attribution
+Recurring commission
+Exit condition
+
+A generation gets a machine-readable QA report.
+
+PHASE 14 — Security Agent
+
+Security should be a dedicated generation stage, not a final checkbox.
+
+Analyze:
+
+XSS
+CSRF
+SQL injection
+Privilege escalation
+Capability checks
+Nonce validation
+Input sanitization
+Output escaping
+REST permissions
+File upload
+Path traversal
+SSRF
+Sensitive data exposure
+Unsafe AJAX
+Unsafe database operations
+
+Then the agent can return:
+
+CRITICAL
+HIGH
+MEDIUM
+LOW
+PASS
+
+The system should block packaging for configured critical findings.
+
+PHASE 15 — Review / Critic Loop
+
+Use OpenHands' existing critic/refinement mechanism where it fits, and add Tersuite-specific review criteria. OpenHands already supports critic scoring and iterative refinement.
+
+The flow:
+
+Coder
+ ↓
+Reviewer
+ ↓
+Issues?
+ ├── No → continue
+ └── Yes
+       ↓
+    Repair
+       ↓
+    Re-test
+       ↓
+    Review again
+
+With a hard limit to prevent infinite loops.
+
+PHASE 16 — Artifact & Delivery Engine
+
+At the end we need:
+
+Generated project
+Generated files
+Manifest
+Version
+ZIP
+Checksums
+Test report
+Security report
+Architecture report
+Changelog
+
+Potential output:
+
+affiliate-membership-pro.zip
+
+with:
+
+plugin/
+├── plugin-file.php
+├── includes/
+├── admin/
+├── frontend/
+├── assets/
+├── templates/
+├── languages/
+├── tests/
+└── readme.txt
+
+The package should be validated as a real WordPress plugin before delivery.
+
+PHASE 17 — Project Memory
+
+Now we bring in the important lessons from the previous Tersuite work.
+
+Project memory should remember:
+
+Project objective
+Approved features
+Rejected features
+Architectural decisions
+User preferences
+Generated files
+Past errors
+Test results
+Security findings
+Agent decisions
+Model usage
+Previous versions
+
+But importantly:
+
+Memory must distinguish facts, decisions, observations and temporary execution state.
+
+Otherwise the system becomes polluted with old reasoning.
+
+This is where the concepts from the earlier Coordinator Context & Project Memory work become useful, but we'd implement them cleanly against the new architecture.
+
+PHASE 18 — Credits, Usage and Billing
+
+Only after generation itself works reliably.
+
+Track:
+
+LLM tokens
+Agent time
+Workspace time
+Tool calls
+Generation cost
+Provider
+Model
+Credits consumed
+
+Then:
+
+Starter
+Growth
+Professional
+Enterprise
+
+can eventually impose:
+
+generation limits
+agent limits
+workspace limits
+knowledge access
+priority
+model access
+PHASE 19 — WordPress Plugin
+
+Only now do we build the WordPress plugin.
+
+At this point, the plugin becomes a relatively thin client.
+
+WordPress
+   │
+   ▼
+Tersuite Plugin
+   │
+   ▼
+Django API
+   │
+   ▼
+Generation
+
+The plugin handles:
+
+Login/API connection
+Projects
+Prompt entry
+Feature specification
+Approval UI
+Generation progress
+Agent logs
+Files
+Downloads
+Settings
+Notifications
+
+It should not contain the actual AI intelligence or generation engine.
+
+PHASE 20 — Plugin Emergency Recovery & Logging
+
+This connects directly with something you discussed previously.
+
+Tersuite's WordPress plugin should include an emergency mechanism so a broken generated/installed component cannot permanently lock the administrator out.
+
+We should build:
+
+Safe Mode
+Plugin Isolation
+Emergency Deactivation
+Recovery Token
+Health Check
+Fatal Error Detection
+Plugin Error Logs
+WordPress Debug Logs
+Recovery Dashboard
+
+Potential flow:
+
+Plugin causes fatal error
+        ↓
+Tersuite recovery mechanism detects failure
+        ↓
+Safe Mode
+        ↓
+Admin access restored
+        ↓
+Deactivate offending plugin
+        ↓
+Display diagnostic report
+
+And the logging system should expose relevant WordPress logs in Tersuite.
+
+This is a separate subsystem, but it should be designed into the plugin architecture from the beginning rather than bolted on later.
+
+PHASE 21 — Observability & Audit
+
+For a platform like this, we need to know why something happened.
+
+Track:
+
+Generation
+Agent
+Task
+Tool
+Model
+Provider
+Workspace
+Event
+Error
+Retry
+Decision
+Approval
+Artifact
+User
+
+Every generation should have a timeline:
+
+20:14:03 Coordinator started
+20:14:07 Feature Discovery started
+20:14:18 61 features recommended
+20:15:04 User approved specification
+20:15:09 Planner started
+20:15:33 Architect completed
+20:17:10 Coder started
+20:22:45 Tests failed
+20:23:02 Repair started
+20:25:18 Tests passed
+20:26:01 Security started
+20:27:30 Security passed
+20:28:04 ZIP generated
+
+This is essential for debugging your own AI platform.
+
+PHASE 22 — Evaluation System
+
+This is something I want us to build earlier than most AI projects do.
+
+We need a benchmark suite.
+
+For example:
+
+Test 001
+Simple settings plugin
+
+
+Test 002
+Custom post type plugin
+
+
+Test 003
+WooCommerce integration
+
+
+Test 004
+Affiliate plugin
+
+
+Test 005
+Membership plugin
+
+
+Test 006
+Complex reporting plugin
+
+
+Test 007
+Security-sensitive plugin
+
+Each generation gets scores:
+
+Requirement coverage
+Architecture quality
+WordPress compliance
+Security
+Testing
+Performance
+UX
+Maintainability
+Extensibility
+Build success
+
+Then we can compare:
+
+OpenHands baseline
+vs
+Tersuite WordPress agent
+vs
+Tersuite + knowledge
+vs
+Tersuite + multiple agents
+
+This is how we know we're actually improving.
+
+PHASE 23 — Production Hardening
+
+Only after the entire pipeline is proven.
+
+We'll address:
+
+Authentication
+Authorization
+Tenant isolation
+Workspace isolation
+Secrets management
+Network restrictions
+Rate limits
+Quotas
+Resource limits
+Container cleanup
+File validation
+Artifact scanning
+Audit logs
+Backup
+Monitoring
+Alerting
+Failure recovery
+PHASE 24 — Commercial Launch
+
+Then:
+
+Landing page
+Pricing
+Subscriptions
+Credit purchases
+Trial
+Documentation
+Onboarding
+Support
+Usage dashboard
+Billing
+Terms
+Privacy
+Licensing
+
+And ultimately:
+
+User
+ ↓
+“I want an affiliate plugin”
+ ↓
+Professional specification
+ ↓
+Approve
+ ↓
+Generate
+ ↓
+Test
+ ↓
+Download
+
+That is the product.
+
+The development order I recommend
+
+We should not build all of these simultaneously.
+
+The sequence should be:
+
+01  Architecture
+02  Django foundation
+03  Project + Generation models
+04  OpenHands adapter
+05  Agent Server
+06  Workspaces
+07  Event streaming
+08  Basic single-agent generation
+09  Subagent/delegation
+10  Tersuite Coordinator
+11  Planner
+12  WordPress knowledge
+13  Feature discovery
+14  Approval/specification
+15  WordPress specialist agents
+16  Docker WordPress sandbox
+17  QA
+18  Security
+19  Review/repair loop
+20  Artifact packaging
+21  Project memory
+22  Usage/credits
+23  WordPress plugin
+24  Emergency recovery/logging
+25  Evaluation benchmark
+26  Production hardening
+27  Commercial launch
+The first actual milestone
+
+I would define MVP-1 very narrowly:
+
+User
+ ↓
+Django API
+ ↓
+Create Project
+ ↓
+Create Generation
+ ↓
+OpenHands Agent
+ ↓
+Docker Workspace
+ ↓
+Agent creates files
+ ↓
+Agent runs tests
+ ↓
+Django receives events
+ ↓
+Generation completed
+ ↓
+Artifact returned
+
+For the first test, we should deliberately avoid WordPress.
+
+Give it something trivial such as:
+
+“Create a Python project with a function, tests, README and run the tests.”
+
+That proves our Tersuite ↔ OpenHands infrastructure works.
+
+Then MVP-2 becomes:
+
+Generate basic WordPress plugin
+
+Then MVP-3:
+
+Generate professional WordPress plugin
+
+Then the knowledge system.
+
+Then the sophisticated feature discovery experience.
+
+This avoids the classic mistake of building WordPress intelligence, UI, billing, sandboxing, multi-agent orchestration and knowledge retrieval simultaneously before we know whether the underlying execution pipeline is reliable.
+
+What I would consider the real Tersuite differentiator
+
+Not:
+
+“We use OpenHands.”
+
+Nobody cares.
+
+Not:
+
+“We have AI agents.”
+
+There are thousands of those.
+
+The differentiation is:
+
+Tersuite understands WordPress deeply enough to turn a vague idea into a professional, comprehensive product specification, obtain the user's approval, architect it correctly, build it, test it in a real WordPress environment, review its security, repair failures, and deliver an installable plugin.
+
+That is the north star.
+
+OpenHands gives us the engineering machinery.
+
+Tersuite provides the WordPress intelligence and product-development system.
+
+The first repository structure
+
+I recommend we start the new backend approximately like this:
+
+tersuite-ai-studio-backend/
+│
+├── apps/
+│   ├── accounts/
+│   ├── projects/
+│   ├── generations/
+│   ├── agents/
+│   ├── workflows/
+│   ├── knowledge/
+│   ├── specifications/
+│   ├── workspaces/
+│   ├── artifacts/
+│   ├── usage/
+│   ├── credits/
+│   ├── subscriptions/
+│   ├── providers/
+│   ├── realtime/
+│   ├── audit/
+│   └── logs/
+│
+├── infrastructure/
+│   ├── openhands/
+│   ├── docker/
+│   ├── redis/
+│   └── celery/
+│
+├── knowledge_base/
+│   ├── wordpress/
+│   ├── woocommerce/
+│   ├── security/
+│   └── domains/
+│
+├── workflows/
+│   ├── discovery/
+│   ├── specification/
+│   ├── generation/
+│   ├── testing/
+│   └── delivery/
+│
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── agent/
+│   ├── workflow/
+│   └── evaluation/
+│
+├── docs/
+├── docker/
+├── manage.py
+├── pyproject.toml
+└── README.md
+
+The exact names can change during implementation; the boundaries are what matter.
+
+And one rule I want us to enforce throughout
+
+Every major module gets:
+
+Specification
+Architecture
+Implementation
+Tests
+Integration
+Audit
+Freeze
+
+before we treat it as complete.
+
+That will keep us from repeating the situation where a module appears finished but later turns out to be only partially integrated.
+
+For the first implementation cycle, I would therefore start with Phase 0 + Phase 1 only: architecture contract and the new Django/OpenHands foundation. Once that foundation passes its tests, we move into the actual agent runtime.
