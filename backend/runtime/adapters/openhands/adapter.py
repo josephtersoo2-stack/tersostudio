@@ -244,12 +244,36 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                     error=err_msg,
                 )
 
-            # 3. Retrieve execution state and output
-            state_resp = self._client.get(f"/api/conversations/{conv_id}")
-            data = state_resp.json() if state_resp.status_code == 200 else {}
+            # 3. Poll execution state until COMPLETED or timeout
+            max_wait_seconds = session.config.timeout_seconds
+            poll_interval = 0.1
+            elapsed = 0.0
+            data = {}
+
+            import time
+            while elapsed < max_wait_seconds:
+                state_resp = self._client.get(f"/api/conversations/{conv_id}")
+                if state_resp.status_code == 200:
+                    data = state_resp.json()
+                    status = data.get("status", "").upper()
+                    if status in ("COMPLETED", "FAILED", "CANCELLED"):
+                        break
+                time.sleep(poll_interval)
+                elapsed += poll_interval
+
             output = data.get("response") or data.get("output") or "Task completed by OpenHands agent."
             token_usage = data.get("token_usage", {})
             artifacts = data.get("artifacts", [])
+
+            if data.get("status") == "FAILED":
+                return TaskResult(
+                    session_id=session_id,
+                    success=False,
+                    execution_status=ExecutionStatus.AGENT_FAILED,
+                    failure_category=FailureCategory.AGENT_FATAL,
+                    output=output,
+                    error=data.get("error", "Agent execution failed."),
+                )
 
             result = TaskResult(
                 session_id=session_id,

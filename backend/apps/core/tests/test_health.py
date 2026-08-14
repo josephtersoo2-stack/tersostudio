@@ -1,13 +1,16 @@
 """Tests for Core Health, Readiness, Middleware, and Exceptions."""
 from django.test import SimpleTestCase, Client
+from django.test import TestCase, Client
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from apps.core.exceptions import custom_exception_handler
 
 
-class HealthCheckTests(SimpleTestCase):
-    """Test suite for /api/v1/health/ live and ready endpoints."""
+class HealthCheckTests(TestCase):
+    """Test suite verifying /health/live and /health/ready endpoints."""
+
+    databases = {"default"}
 
     def setUp(self):
         self.client = Client()

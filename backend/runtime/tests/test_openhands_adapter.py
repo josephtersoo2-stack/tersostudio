@@ -94,6 +94,7 @@ class OpenHandsAdapterTests(unittest.TestCase):
         mock_state_resp = MagicMock(spec=httpx.Response)
         mock_state_resp.status_code = 200
         mock_state_resp.json.return_value = {
+            "status": "COMPLETED",
             "output": "Generated WordPress plugin skeleton.",
             "token_usage": {"total_tokens": 500},
         }
