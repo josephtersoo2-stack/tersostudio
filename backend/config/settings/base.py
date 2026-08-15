@@ -194,6 +194,8 @@ OPENHANDS_DEFAULT_MODEL = os.getenv(
     "anthropic/claude-sonnet-4-5-20250929",
 )
 AGENT_RUNTIME_BACKEND = os.getenv("AGENT_RUNTIME_BACKEND", "mock")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
 # Structured Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

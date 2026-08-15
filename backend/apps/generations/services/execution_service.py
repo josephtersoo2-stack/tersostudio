@@ -1,5 +1,6 @@
 """Bridges persisted GenerationSteps to the TersuiteAgentRuntime."""
 import logging
+import os
 
 from django.conf import settings
 from django.db import transaction
@@ -67,11 +68,17 @@ class ExecutionService:
                 f"steps can be (re)executed."
             )
 
+        model_name = (
+            step.input_payload.get("model")
+            or os.getenv("OPENROUTER_MODEL")
+            or settings.OPENHANDS_DEFAULT_MODEL
+        )
+
         agent_run = AgentRun.objects.create(
             step=step,
             run_number=step.runs.count() + 1,
             runtime_type=getattr(settings, "AGENT_RUNTIME_BACKEND", "mock"),
-            model_name=settings.OPENHANDS_DEFAULT_MODEL,
+            model_name=model_name,
             prompt=step.input_payload.get("prompt")
             or f"{step.name}\n\nAgent role: {step.agent_role}",
             status=AgentRunStatus.QUEUED,
@@ -120,11 +127,18 @@ class ExecutionService:
                 event.agent_run_id = str(agent_run.id)
             publisher.publish(event)
 
+        model_name = (
+            agent_run.model_name
+            or step.input_payload.get("model")
+            or os.getenv("OPENROUTER_MODEL")
+            or settings.OPENHANDS_DEFAULT_MODEL
+        )
+
         runtime = _build_runtime()
         session_config = SessionConfig(
             generation_id=str(generation.id),
             agent_run_id=str(agent_run.id),
-            model=agent_run.model_name or settings.OPENHANDS_DEFAULT_MODEL,
+            model=model_name,
             system_prompt=step.input_payload.get("system_prompt", ""),
             max_iterations=step.input_payload.get("max_iterations", 30),
             on_event=stream_event,

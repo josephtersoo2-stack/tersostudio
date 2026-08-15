@@ -136,19 +136,43 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
 
         try:
             model_name = config.model or self.config.default_model
-            api_key_str = (
-                self.config.api_key
-                or os.getenv("OPENAI_API_KEY")
-                or os.getenv("ANTHROPIC_API_KEY")
-                or os.getenv("GEMINI_API_KEY")
-                or os.getenv("GROQ_API_KEY")
-                or ""
-            )
+            base_url = self.config.base_url
 
-            llm = OpenHandsLLM(
-                model=model_name,
-                api_key=SecretStr(api_key_str) if api_key_str else None,
-            )
+            api_key_str = ""
+            if model_name.startswith("openrouter/") or os.getenv("OPENROUTER_API_KEY"):
+                if model_name.startswith("openrouter/"):
+                    api_key_str = os.getenv("OPENROUTER_API_KEY") or self.config.api_key or ""
+                    base_url = base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+                elif os.getenv("OPENROUTER_API_KEY") and not any([
+                    os.getenv("ANTHROPIC_API_KEY") and model_name.startswith("anthropic/"),
+                    os.getenv("OPENAI_API_KEY") and model_name.startswith("openai/"),
+                    os.getenv("GEMINI_API_KEY") and model_name.startswith("gemini/"),
+                    os.getenv("GROQ_API_KEY") and model_name.startswith("groq/"),
+                ]):
+                    api_key_str = os.getenv("OPENROUTER_API_KEY", "")
+                    base_url = base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+                    if not model_name.startswith("openrouter/"):
+                        model_name = f"openrouter/{model_name}"
+
+            if not api_key_str:
+                api_key_str = (
+                    self.config.api_key
+                    or os.getenv("OPENROUTER_API_KEY")
+                    or os.getenv("ANTHROPIC_API_KEY")
+                    or os.getenv("OPENAI_API_KEY")
+                    or os.getenv("GEMINI_API_KEY")
+                    or os.getenv("GROQ_API_KEY")
+                    or ""
+                )
+
+            llm_kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "api_key": SecretStr(api_key_str) if api_key_str else None,
+            }
+            if base_url:
+                llm_kwargs["base_url"] = base_url
+
+            llm = OpenHandsLLM(**llm_kwargs)
             agent = OpenHandsAgent(
                 llm=llm,
                 system_prompt=config.system_prompt,

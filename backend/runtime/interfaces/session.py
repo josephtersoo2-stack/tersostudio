@@ -15,6 +15,7 @@ class SessionStatus(str, Enum):
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    CLOSED = "CLOSED"
 
 
 class ExecutionStatus(str, Enum):

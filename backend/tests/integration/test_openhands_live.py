@@ -42,6 +42,11 @@ def is_official_openhands_server_available(server_url: str) -> bool:
 
 def get_available_llm_credentials() -> tuple[str, str]:
     """Retrieve available LLM model and API key from environment."""
+    if os.getenv("OPENROUTER_API_KEY"):
+        model = os.getenv("OPENROUTER_MODEL", "openrouter/anthropic/claude-3.5-sonnet")
+        if not model.startswith("openrouter/"):
+            model = f"openrouter/{model}"
+        return model, os.environ["OPENROUTER_API_KEY"]
     if os.getenv("ANTHROPIC_API_KEY"):
         return "anthropic/claude-3-5-sonnet-20241022", os.environ["ANTHROPIC_API_KEY"]
     if os.getenv("OPENAI_API_KEY"):
@@ -70,7 +75,7 @@ class OfficialOpenHandsLiveSmokeTests(unittest.TestCase):
         self.model, self.api_key = get_available_llm_credentials()
         if not self.api_key:
             self.skipTest(
-                "SKIPPED — No LLM API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, "
+                "SKIPPED — No LLM API key (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, "
                 "or GROQ_API_KEY) found in environment for live agent execution."
             )
 
