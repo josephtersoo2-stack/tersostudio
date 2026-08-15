@@ -24,3 +24,8 @@ class ArtifactStorageError(GenerationDomainError):
 class WorkspaceError(GenerationDomainError):
     """Raised when an operation on a workspace fails."""
     pass
+
+
+class StepNotExecutableError(GenerationDomainError):
+    """Raised when execution is attempted on a step/generation not ready for it."""
+    pass

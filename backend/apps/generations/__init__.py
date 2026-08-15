@@ -1,0 +1,1 @@
+"""Generations app package initialization."""

@@ -193,6 +193,7 @@ OPENHANDS_DEFAULT_MODEL = os.getenv(
     "OPENHANDS_DEFAULT_MODEL",
     "anthropic/claude-sonnet-4-5-20250929",
 )
+AGENT_RUNTIME_BACKEND = os.getenv("AGENT_RUNTIME_BACKEND", "mock")
 
 # Structured Logging Configuration
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

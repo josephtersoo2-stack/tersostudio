@@ -88,6 +88,21 @@ class MockAgentRuntime(TersuiteAgentRuntime):
 
         # Simulate execution steps
         session.update_status(SessionStatus.RUNNING)
+        if prompt.startswith("FORCE_MOCK_FAILURE:"):
+            error_msg = prompt.replace("FORCE_MOCK_FAILURE:", "").strip()
+            result = TaskResult(
+                session_id=session_id,
+                success=False,
+                execution_status=ExecutionStatus.TIMEOUT,
+                failure_category=FailureCategory.TIMEOUT,
+                output=f"Simulated execution failure: {error_msg}",
+                error=error_msg,
+                error_details={"simulated": True},
+            )
+            session._result = result
+            session.update_status(SessionStatus.FAILED)
+            return result
+
         session.record_event(
             EventType.TASK_STARTED,
             {"prompt": prompt, "context": context or {}},
