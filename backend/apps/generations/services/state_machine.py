@@ -131,6 +131,11 @@ class GenerationStateMachine:
             "timestamp": now.isoformat(),
             "reason": reason,
         }
+        if failure_category:
+            history_entry["failure_category"] = failure_category
+        if error_message:
+            history_entry["error_message"] = error_message
+
         if "state_history" not in generation.metadata:
             generation.metadata["state_history"] = []
         generation.metadata["state_history"].append(history_entry)

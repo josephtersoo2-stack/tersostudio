@@ -1,15 +1,4 @@
-"""Bridges persisted GenerationSteps to the TersuiteAgentRuntime.
-
-This is the connective tissue the Phase 1 correction pass flagged as
-missing: create_session() / send_task() were previously only ever called
-from tests. Nothing in the request/response or Celery layer invoked the
-runtime adapter at all.
-
-Scope here is deliberately narrow — create one AgentRun for one
-GenerationStep, execute it, record exactly what happened. Deciding which
-step runs next, retry policy, and multi-agent sequencing are orchestrator
-concerns for a later pass, not this file's job.
-"""
+"""Bridges persisted GenerationSteps to the TersuiteAgentRuntime."""
 import logging
 
 from django.conf import settings
@@ -34,8 +23,7 @@ def _build_runtime():
 
     Defaults to the mock adapter so local dev and CI never accidentally
     hit a real OpenHands server (and real model spend) unless
-    AGENT_RUNTIME_BACKEND=openhands is set explicitly. See the
-    settings.py addition noted alongside this file.
+    AGENT_RUNTIME_BACKEND=openhands is set explicitly.
     """
     backend = getattr(settings, "AGENT_RUNTIME_BACKEND", "mock")
 
@@ -56,13 +44,7 @@ def _build_runtime():
 
 
 class ExecutionService:
-    """Creates AgentRuns and executes them against the configured runtime.
-
-    A fresh runtime instance is built per call rather than shared or
-    pooled: the adapters keep session state in a plain instance dict, and
-    a Celery worker interleaves many unrelated runs, so a shared instance
-    would be a real state-leak risk for very little benefit.
-    """
+    """Creates AgentRuns and executes them against the configured runtime."""
 
     @staticmethod
     @transaction.atomic
@@ -99,9 +81,6 @@ class ExecutionService:
         step.started_at = step.started_at or timezone.now()
         step.save(update_fields=["status", "started_at", "updated_at"])
 
-        # Imported here, not at module load, so this module stays safe to
-        # import before Celery's autodiscover_tasks() has fully loaded
-        # every app's task module.
         from ..tasks import execute_agent_run
 
         transaction.on_commit(lambda: execute_agent_run.delay(str(agent_run.id)))
@@ -113,8 +92,6 @@ class ExecutionService:
         agent_run = AgentRun.objects.select_related("step__generation").get(id=agent_run_id)
 
         if agent_run.status != AgentRunStatus.QUEUED:
-            # Guards against Celery's acks_late redelivering a task whose
-            # AgentRun already started (e.g. after a worker restart).
             logger.warning(
                 "AgentRun %s is '%s', not QUEUED; skipping duplicate execution.",
                 agent_run_id, agent_run.status,
@@ -135,6 +112,14 @@ class ExecutionService:
             payload={"step": step.name, "run_number": agent_run.run_number},
         ))
 
+        def stream_event(event: NormalizedEvent) -> None:
+            """Stream intermediate events to the generation's Channels group."""
+            if not event.generation_id:
+                event.generation_id = str(generation.id)
+            if not event.agent_run_id:
+                event.agent_run_id = str(agent_run.id)
+            publisher.publish(event)
+
         runtime = _build_runtime()
         session_config = SessionConfig(
             generation_id=str(generation.id),
@@ -142,16 +127,21 @@ class ExecutionService:
             model=agent_run.model_name or settings.OPENHANDS_DEFAULT_MODEL,
             system_prompt=step.input_payload.get("system_prompt", ""),
             max_iterations=step.input_payload.get("max_iterations", 30),
+            on_event=stream_event,
         )
 
         try:
             session = runtime.create_session(session_config)
         except AgentRuntimeError as exc:
+            category = getattr(exc, "failure_category", FailureCategory.NETWORK_CONNECTION)
+            cat_val = category.value if hasattr(category, "value") else str(category)
+            retryable = getattr(exc, "retryable", True)
             ExecutionService._record_failure(
                 agent_run, step, generation, publisher,
                 error=str(exc),
-                failure_category=FailureCategory.NETWORK_CONNECTION.value,
-                retryable=True,
+                failure_category=cat_val,
+                retryable=retryable,
+                error_details=getattr(exc, "details", {}),
             )
             return agent_run
 
@@ -162,11 +152,15 @@ class ExecutionService:
         try:
             result = runtime.send_task(session.session_id, agent_run.prompt)
         except AgentRuntimeError as exc:
+            category = getattr(exc, "failure_category", FailureCategory.AGENT_FATAL)
+            cat_val = category.value if hasattr(category, "value") else str(category)
+            retryable = getattr(exc, "retryable", False)
             ExecutionService._record_failure(
                 agent_run, step, generation, publisher,
                 error=str(exc),
-                failure_category=FailureCategory.AGENT_FATAL.value,
-                retryable=False,
+                failure_category=cat_val,
+                retryable=retryable,
+                error_details=getattr(exc, "details", {}),
             )
             return agent_run
         finally:
@@ -175,10 +169,11 @@ class ExecutionService:
         if result.success:
             ExecutionService._record_success(agent_run, step, generation, publisher, result)
         else:
+            cat_val = result.failure_category.value if hasattr(result.failure_category, "value") else str(result.failure_category)
             ExecutionService._record_failure(
                 agent_run, step, generation, publisher,
                 error=result.error or "Agent execution failed.",
-                failure_category=result.failure_category.value,
+                failure_category=cat_val,
                 retryable=result.retryable,
                 output=result.output,
                 token_usage=result.token_usage,
@@ -230,7 +225,10 @@ class ExecutionService:
     ) -> None:
         agent_run.status = AgentRunStatus.FAILED
         agent_run.failure_category = failure_category
-        agent_run.error_details = error_details or {"error": error, "retryable": retryable}
+        details = dict(error_details) if error_details else {}
+        details["error"] = error
+        details["retryable"] = retryable
+        agent_run.error_details = details
         agent_run.output = output
         agent_run.token_usage = token_usage or {}
         agent_run.completed_at = timezone.now()
@@ -253,8 +251,6 @@ class ExecutionService:
                 failure_category=failure_category,
             )
         except InvalidStateTransitionError:
-            # Generation already left BUILDING (paused/cancelled/etc. by
-            # something else) — the AgentRun/Step failure above still stands.
             logger.info(
                 "Generation %s no longer transitionable to FAILED (already %s).",
                 generation.id, generation.status,

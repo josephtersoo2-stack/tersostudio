@@ -53,6 +53,11 @@ class MockAgentSession(AgentSession):
             payload=payload or {},
         )
         self._events.append(event)
+        if self._config.on_event:
+            try:
+                self._config.on_event(event)
+            except Exception:
+                pass
         return event
 
 
@@ -89,15 +94,46 @@ class MockAgentRuntime(TersuiteAgentRuntime):
         # Simulate execution steps
         session.update_status(SessionStatus.RUNNING)
         if prompt.startswith("FORCE_MOCK_FAILURE:"):
-            error_msg = prompt.replace("FORCE_MOCK_FAILURE:", "").strip()
+            raw_err = prompt.replace("FORCE_MOCK_FAILURE:", "").strip()
+            category = FailureCategory.TIMEOUT
+            retryable = True
+            error_msg = raw_err
+
+            if raw_err.startswith("NETWORK:"):
+                category = FailureCategory.NETWORK_CONNECTION
+                retryable = True
+                error_msg = raw_err[len("NETWORK:"):].strip()
+            elif raw_err.startswith("MODEL:"):
+                category = FailureCategory.MODEL_ERROR
+                retryable = False
+                error_msg = raw_err[len("MODEL:"):].strip()
+            elif raw_err.startswith("TOOL:"):
+                category = FailureCategory.TOOL_ERROR
+                retryable = False
+                error_msg = raw_err[len("TOOL:"):].strip()
+            elif raw_err.startswith("FATAL:"):
+                category = FailureCategory.AGENT_FATAL
+                retryable = False
+                error_msg = raw_err[len("FATAL:"):].strip()
+            elif raw_err.startswith("TIMEOUT:"):
+                category = FailureCategory.TIMEOUT
+                retryable = True
+                error_msg = raw_err[len("TIMEOUT:"):].strip()
+
+            session.record_event(
+                EventType.AGENT_FAILED,
+                {"error": error_msg, "failure_category": category.value, "retryable": retryable},
+            )
+
             result = TaskResult(
                 session_id=session_id,
                 success=False,
-                execution_status=ExecutionStatus.TIMEOUT,
-                failure_category=FailureCategory.TIMEOUT,
+                execution_status=ExecutionStatus.TIMEOUT if category == FailureCategory.TIMEOUT else ExecutionStatus.AGENT_FAILED,
+                failure_category=category,
                 output=f"Simulated execution failure: {error_msg}",
                 error=error_msg,
-                error_details={"simulated": True},
+                error_details={"simulated": True, "error": error_msg, "retryable": retryable},
+                retryable=retryable,
             )
             session._result = result
             session.update_status(SessionStatus.FAILED)

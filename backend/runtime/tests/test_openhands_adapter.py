@@ -1,12 +1,12 @@
 """Unit tests for the OpenHands Agent Server adapter boundary (Official SDK Path).
 
 Verifies strict official SDK RemoteConversation lifecycle execution, error classification,
-and event normalization with zero fallback to homemade REST layers.
+live event callback streaming, and event normalization with zero fallback to homemade REST layers.
 """
 import unittest
 from unittest.mock import MagicMock, patch
 import httpx
-from apps.realtime.events import EventType
+from apps.realtime.events import EventType, NormalizedEvent
 from runtime.exceptions import AdapterConnectionError
 from runtime.adapters.openhands.config import OpenHandsServerConfig
 from runtime.adapters.openhands.adapter import OpenHandsAgentRuntime
@@ -55,6 +55,38 @@ class OpenHandsAdapterTests(unittest.TestCase):
         self.assertEqual(session.status, SessionStatus.ACTIVE)
         self.assertEqual(session.remote_conversation_id, "conv-sdk-123")
         self.assertEqual(session.conversation_obj, mock_conv)
+
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_create_session_wires_live_event_callback(self, mock_conv_cls):
+        """Verify create_session passes a callback to OpenHandsConversation and streams events."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-stream"
+        mock_conv_cls.return_value = mock_conv
+
+        received_events = []
+        self.session_config.on_event = lambda ev: received_events.append(ev)
+
+        session = self.runtime.create_session(self.session_config)
+
+        # Ensure callbacks parameter was passed to OpenHandsConversation
+        self.assertTrue(mock_conv_cls.called)
+        call_kwargs = mock_conv_cls.call_args[1]
+        self.assertIn("callbacks", call_kwargs)
+        callbacks = call_kwargs["callbacks"]
+        self.assertIsInstance(callbacks, list)
+        self.assertEqual(len(callbacks), 1)
+
+        # Trigger the callback simulating live event from WebSocket
+        raw_event = {"type": "action", "tool": "file_writer", "action": "create_file"}
+        callbacks[0](raw_event)
+
+        # Verify event was added to session and streamed to on_event callback
+        self.assertEqual(len(session._events), 1)
+        self.assertEqual(session._events[0].event_type, EventType.AGENT_TOOL_STARTED)
+        self.assertEqual(len(received_events), 1)
+        self.assertEqual(received_events[0].event_type, EventType.AGENT_TOOL_STARTED)
+        self.assertEqual(received_events[0].generation_id, "gen-oh-001")
+        self.assertEqual(received_events[0].agent_run_id, "run-oh-002")
 
     @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
     def test_create_session_fails_on_unreachable_server(self, mock_conv_cls):
@@ -133,6 +165,38 @@ class OpenHandsAdapterTests(unittest.TestCase):
         self.assertEqual(result.failure_category, FailureCategory.NETWORK_CONNECTION)
         self.assertTrue(result.retryable)
         self.assertIn("Infrastructure connection error", result.error)
+
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_send_task_reports_timeout_failure(self, mock_conv_cls):
+        """Verify send_task classifies timeout errors properly."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-timeout"
+        mock_conv.run.side_effect = TimeoutError("Execution timed out after 300s")
+        mock_conv_cls.return_value = mock_conv
+
+        session = self.runtime.create_session(self.session_config)
+        result = self.runtime.send_task(session.session_id, "Execute task.")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.execution_status, ExecutionStatus.TIMEOUT)
+        self.assertEqual(result.failure_category, FailureCategory.TIMEOUT)
+        self.assertTrue(result.retryable)
+
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    def test_send_task_reports_tool_error(self, mock_conv_cls):
+        """Verify send_task classifies tool execution failures properly."""
+        mock_conv = MagicMock()
+        mock_conv.id = "conv-sdk-tool"
+        mock_conv.run.side_effect = Exception("ToolExecutionError: tool 'bash' failed with code 127")
+        mock_conv_cls.return_value = mock_conv
+
+        session = self.runtime.create_session(self.session_config)
+        result = self.runtime.send_task(session.session_id, "Execute task.")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.execution_status, ExecutionStatus.AGENT_FAILED)
+        self.assertEqual(result.failure_category, FailureCategory.TOOL_ERROR)
+        self.assertFalse(result.retryable)
 
     @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
     def test_cancel_execution_calls_sdk_interrupt(self, mock_conv_cls):

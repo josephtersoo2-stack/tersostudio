@@ -147,3 +147,54 @@ Standard Event Types:
 - `agent.completed`: Task completed successfully.
 - `agent.failed`: Execution failed with fatal error.
 - `generation.cancelled`: Execution cancelled by user or coordinator.
+
+---
+
+## 6. Live Event Streaming Architecture
+
+Tersuite does NOT wait for `conv.run()` to finish before observing events.
+
+```
+OpenHands Agent Server (WebSocket /sockets/events/{id})
+                    │
+                    ▼
+   OpenHands SDK WebSocketCallbackClient
+                    │ (synchronous event callback)
+                    ▼
+     OpenHandsAgentRuntime (live_event_callback)
+                    │ (normalizes Event -> NormalizedEvent)
+                    ▼
+         ExecutionService (stream_event)
+                    │
+                    ▼
+     GenerationEventPublisher (channel_layer.group_send)
+                    │
+                    ▼
+   Django Channels Group `events_<generation_id>`
+                    │
+                    ▼
+       Connected WebSocket Frontend Clients
+```
+
+Key guarantees:
+- `RemoteConversation` is instantiated with `callbacks=[live_event_callback]`.
+- As the agent acts, thinks, or invokes tools, events are dispatched immediately.
+- `GenerationEventPublisher` acts as the single producer choke point for Channels broadcasting.
+- Event broadcasting errors are logged and tolerated without crashing the active agent execution.
+
+---
+
+## 7. Failure Classification & Retry Taxonomy
+
+Errors during execution are strictly classified without homemade retry loops:
+
+| Category (`FailureCategory`) | Source / Condition | Default Retryable | Handled In |
+|---|---|---|---|
+| `NETWORK_CONNECTION` | `httpx.ConnectError`, `WebSocketConnectionError`, network drop | `True` | Infrastructure / connection layer |
+| `TIMEOUT` | Execution duration exceeds timeout threshold | `True` | Runtime timeout guard |
+| `MODEL_ERROR` | LLM rate limit (429), provider overloaded (500/503), context window | `True` (rate-limited) / `False` (bad request) | Model provider bridge |
+| `TOOL_ERROR` | Command/tool execution failure, syntax error | `False` | Agent tool feedback loop |
+| `AGENT_FATAL` | Unrecoverable loop, agent failure | `False` | Agent / Orchestration |
+
+- `AgentRun.error_details` retains `{"error": ..., "retryable": ..., ...}`.
+- Failures transition `Generation` to `FAILED` through `GenerationStateMachine.transition()`, recording `failure_category` in the generation state and metadata history.

@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class SessionStatus(str, Enum):
@@ -55,6 +55,7 @@ class SessionConfig:
     max_iterations: int = 30
     timeout_seconds: int = 300
     metadata: Dict[str, Any] = field(default_factory=dict)
+    on_event: Optional[Callable[[Any], None]] = None
 
 
 @dataclass

@@ -4,6 +4,7 @@ Uses the official OpenHands Software Agent SDK (v1.42.1) RemoteConversation
 as its sole execution path:
   - RemoteWorkspace: Sandboxed workspace connection to OpenHands Agent Server
   - Conversation / RemoteConversation: Lifecycle management (creation, send_message, run, interrupt, close)
+  - Live Event Streaming: Real-time event subscription callback via WebSocket during execution
   - Events & Stats: Direct extraction and normalization from OpenHands state
   - Strict Failure Classification: Rich error categorization without homemade fallback retries
 """
@@ -99,6 +100,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         """Instantiate a new conversation session using official OpenHands SDK RemoteConversation.
 
         Creates conversation via official OpenHands SDK Conversation factory.
+        Wires real-time WebSocket event callbacks to enable live event streaming.
         Raises AdapterConnectionError if the remote server cannot be reached.
         Never fabricates detached synthetic conversation IDs.
         """
@@ -110,6 +112,27 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
             raise AdapterConnectionError(
                 "OpenHands Software Agent SDK is not installed in the environment."
             )
+
+        session = OpenHandsAgentSession(
+            session_id=session_id,
+            conversation_id=None,
+            config=config,
+            conversation_obj=None,
+        )
+
+        def live_event_callback(raw_event: Any) -> None:
+            """Callback invoked synchronously by OpenHands SDK WebSocket client on incoming events."""
+            try:
+                norm_event = self.normalize_event(raw_event, config)
+                session.add_event(norm_event)
+                if config.on_event:
+                    config.on_event(norm_event)
+            except Exception as ev_err:
+                logger.warning(
+                    "Error normalizing or forwarding live OpenHands event: %s",
+                    ev_err,
+                    exc_info=True,
+                )
 
         try:
             model_name = config.model or self.config.default_model
@@ -140,6 +163,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 agent=agent,
                 workspace=workspace,
                 max_iteration_per_run=config.max_iterations,
+                callbacks=[live_event_callback],
             )
 
             if hasattr(conversation_obj, "id"):
@@ -150,18 +174,14 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError, WebSocketConnectionError) as exc:
             err_msg = f"Cannot connect to OpenHands Agent Server at {self.config.server_url}: {exc}"
             logger.error(err_msg)
-            raise AdapterConnectionError(err_msg) from exc
+            raise AdapterConnectionError(err_msg, details={"server_url": self.config.server_url}) from exc
         except Exception as exc:
             err_msg = f"Failed to instantiate OpenHands RemoteConversation: {exc}"
             logger.error(err_msg)
             raise AdapterConnectionError(err_msg) from exc
 
-        session = OpenHandsAgentSession(
-            session_id=session_id,
-            conversation_id=conversation_id,
-            config=config,
-            conversation_obj=conversation_obj,
-        )
+        session._conversation_id = conversation_id
+        session._conversation_obj = conversation_obj
         session.update_status(SessionStatus.ACTIVE)
         self._sessions[session_id] = session
 
@@ -183,7 +203,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
     ) -> TaskResult:
         """Send a message to the OpenHands conversation and execute the agent run via SDK.
 
-        If execution fails, classifies the error and returns a failed TaskResult.
+        If execution fails, accurately classifies the failure category and retryability.
         Never falls back to a handwritten REST retry.
         """
         session = self.get_session(session_id)
@@ -210,7 +230,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
             # 1. Send user message via official SDK
             conv.send_message(prompt)
 
-            # 2. Trigger run and wait for completion via official SDK
+            # 2. Trigger run and wait for completion via official SDK (events stream live via callbacks)
             conv.run()
 
             # 3. Extract output and stats from official SDK state
@@ -220,8 +240,6 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
 
             if hasattr(conv, "state") and hasattr(conv.state, "events"):
                 for event in conv.state.events:
-                    norm = self.normalize_event(event, session.config)
-                    session.add_event(norm)
                     if hasattr(event, "role") and getattr(event, "role", None) in ("assistant", "agent"):
                         content = getattr(event, "content", None)
                         if isinstance(content, str) and content:
@@ -261,6 +279,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 failure_category=FailureCategory.NETWORK_CONNECTION,
                 retryable=True,
                 error=err_msg,
+                error_details={"exception": str(net_err), "type": type(net_err).__name__, "retryable": True},
             )
             self._results[session_id] = res
             return res
@@ -276,6 +295,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 failure_category=FailureCategory.TIMEOUT,
                 retryable=True,
                 error=err_msg,
+                error_details={"exception": str(timeout_err), "type": type(timeout_err).__name__, "retryable": True},
             )
             self._results[session_id] = res
             return res
@@ -283,23 +303,34 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         except Exception as exec_err:
             session.update_status(SessionStatus.FAILED)
             err_str = str(exec_err)
+            err_lower = err_str.lower()
             logger.error(f"OpenHands SDK execution failed: {err_str}")
 
-            # Classify failure category
-            if any(term in err_str.lower() for term in ["badrequesterror", "model", "api key", "provider"]):
+            # Precise Classification based on runtime/exception details
+            if any(term in err_lower for term in ["connect", "refused", "connection reset", "network", "remote protocol", "server disconnected"]):
+                category = FailureCategory.NETWORK_CONNECTION
+                retryable = True
+            elif any(term in err_lower for term in ["timeout", "timed out", "deadline exceeded"]):
+                category = FailureCategory.TIMEOUT
+                retryable = True
+            elif any(term in err_lower for term in ["badrequesterror", "model", "api key", "provider", "ratelimit", "rate limit", "quota", "overloaded", "context_length", "invalid_request"]):
                 category = FailureCategory.MODEL_ERROR
-            elif "tool" in err_str.lower():
+                retryable = any(term in err_lower for term in ["ratelimit", "rate limit", "429", "500", "503", "overloaded", "server error"])
+            elif "tool" in err_lower or "action" in err_lower or "command" in err_lower:
                 category = FailureCategory.TOOL_ERROR
+                retryable = False
             else:
                 category = FailureCategory.AGENT_FATAL
+                retryable = False
 
             res = TaskResult(
                 session_id=session_id,
                 success=False,
                 execution_status=ExecutionStatus.AGENT_FAILED,
                 failure_category=category,
-                retryable=False,
+                retryable=retryable,
                 error=err_str,
+                error_details={"exception": err_str, "type": type(exec_err).__name__, "retryable": retryable},
             )
             self._results[session_id] = res
             return res
@@ -364,7 +395,6 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
 
     async def subscribe_events(self, session_id: str) -> AsyncIterator[NormalizedEvent]:
         """Stream events asynchronously for a given session."""
-        session = self.get_session(session_id)
         events = self.get_historical_events(session_id)
         for ev in events:
             yield ev
@@ -385,25 +415,52 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         event_type = EventType.AGENT_THINKING
 
         if hasattr(raw_event, "model_dump"):
-            payload = raw_event.model_dump()
+            try:
+                payload = raw_event.model_dump(mode="json")
+            except Exception:
+                payload = raw_event.model_dump()
         elif isinstance(raw_event, dict):
             payload = raw_event
         else:
             payload = {"raw": str(raw_event)}
 
-        raw_type = payload.get("type", "").lower()
+        # Class/type inspection
+        type_name = type(raw_event).__name__.lower() if not isinstance(raw_event, dict) else ""
+        raw_type = str(payload.get("type", "")).lower()
 
-        if raw_type in ("action", "tool_call", "actionevent") or "action" in payload:
+        if (
+            "action" in type_name
+            or "toolcall" in type_name
+            or raw_type in ("action", "tool_call", "actionevent", "acptoolcallevent")
+            or "action" in payload
+        ):
             event_type = EventType.AGENT_TOOL_STARTED
-        elif raw_type in ("observation", "observationevent") or "observation" in payload:
+        elif (
+            "observation" in type_name
+            or raw_type in ("observation", "observationevent")
+            or "observation" in payload
+        ):
             event_type = EventType.AGENT_TOOL_FINISHED
-        elif raw_type in ("agenterror", "conversationerror", "error"):
+        elif (
+            "error" in type_name
+            or raw_type in ("agenterror", "conversationerror", "error", "agenterrorevent")
+        ):
             event_type = EventType.AGENT_FAILED
-        elif raw_type in ("completed", "finish", "done"):
+        elif (
+            raw_type in ("completed", "finish", "done")
+            or (payload.get("key") == "execution_status" and str(payload.get("value", "")).lower() in ("finished", "completed"))
+        ):
             event_type = EventType.AGENT_COMPLETED
-        elif raw_type in ("interrupt", "interruptevent", "cancelled", "cancel"):
+        elif (
+            "interrupt" in type_name
+            or "pause" in type_name
+            or raw_type in ("interrupt", "interruptevent", "cancelled", "cancel", "pause")
+        ):
             event_type = EventType.GENERATION_CANCELLED
-        elif raw_type == "started":
+        elif (
+            raw_type == "started"
+            or (payload.get("key") == "execution_status" and str(payload.get("value", "")).lower() == "running")
+        ):
             event_type = EventType.AGENT_STARTED
         else:
             event_type = EventType.AGENT_THINKING
