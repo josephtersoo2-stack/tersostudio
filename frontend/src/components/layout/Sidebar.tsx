@@ -1,12 +1,14 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard,
-  Cpu,
-  Layers,
-  FolderGit2,
-  Package,
   Activity,
+  BookOpen,
+  Boxes,
+  Cpu,
+  FolderGit2,
+  Layers,
+  LayoutDashboard,
+  Package,
   ShieldCheck,
   Terminal,
 } from "lucide-react";
@@ -16,6 +18,7 @@ interface NavItem {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   disabled?: boolean;
+  badge?: string;
 }
 
 const navItems: NavItem[] = [
@@ -24,7 +27,9 @@ const navItems: NavItem[] = [
   { name: "Agent Runs", href: "/agent-runs", icon: Cpu },
   { name: "Runtime Health", href: "/runtime-health", icon: Activity },
   { name: "Artifacts", href: "/artifacts", icon: Package },
-  { name: "Projects", href: "/projects", icon: FolderGit2, disabled: true },
+  { name: "Projects", href: "/projects", icon: FolderGit2, disabled: true, badge: "Phase 5+" },
+  { name: "Knowledge Base", href: "/knowledge", icon: BookOpen, disabled: true, badge: "Phase 5+" },
+  { name: "Sandboxes", href: "/sandboxes", icon: Boxes, disabled: true, badge: "Phase 5+" },
 ];
 
 export const Sidebar: React.FC = () => {
@@ -39,7 +44,7 @@ export const Sidebar: React.FC = () => {
           <div className="text-sm font-bold text-slate-100 tracking-tight flex items-center gap-1.5">
             Tersuite Studio
             <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-brand-950 border border-brand-800/60 text-brand-300">
-              CC-02
+              CC-03
             </span>
           </div>
           <p className="text-[11px] text-slate-400">Control Center</p>
@@ -61,11 +66,11 @@ export const Sidebar: React.FC = () => {
                 className="flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium text-slate-600 cursor-not-allowed group"
               >
                 <div className="flex items-center gap-3">
-                  <Icon className="h-4 w-4" />
+                  <Icon className="h-4 w-4 text-slate-600" />
                   <span>{item.name}</span>
                 </div>
                 <span className="text-[9px] uppercase tracking-wider bg-slate-900 border border-slate-800/80 px-1.5 py-0.5 rounded text-slate-500 font-mono">
-                  Soon
+                  {item.badge || "Soon"}
                 </span>
               </div>
             );
@@ -96,7 +101,7 @@ export const Sidebar: React.FC = () => {
           <ShieldCheck className="h-3.5 w-3.5" />
           <span>Staff Guard Active</span>
         </div>
-        <span className="font-mono text-[10px] text-slate-600">v1.42</span>
+        <span className="font-mono text-[10px] text-slate-600">v1.43</span>
       </div>
     </aside>
   );

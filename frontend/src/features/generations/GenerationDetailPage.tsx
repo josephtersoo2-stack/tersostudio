@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowLeft,
   Calendar,
   Cpu,
@@ -11,10 +12,18 @@ import {
   HardDrive,
   Layers,
   Package,
+  Play,
   RefreshCw,
+  RotateCcw,
+  StopCircle,
   User,
+  X,
 } from "lucide-react";
-import { useControlCenterGenerationDetail } from "./generationsApi";
+import {
+  useCancelGeneration,
+  useControlCenterGenerationDetail,
+  useRetryStep,
+} from "./generationsApi";
 import { LiveEventsPanel } from "./LiveEventsPanel";
 import { formatDate, formatDuration, formatFileSize } from "@/lib/formatters";
 import { downloadFile } from "@/lib/apiClient";
@@ -28,7 +37,17 @@ export const GenerationDetailPage: React.FC = () => {
   const { data: gen, isLoading, isError, error, refetch, isFetching } =
     useControlCenterGenerationDetail(generationId);
 
+  const cancelMutation = useCancelGeneration();
+  const retryStepMutation = useRetryStep();
+
   const [downloadingArtifactId, setDownloadingArtifactId] = useState<string | null>(null);
+
+  // Modal States
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [retryingStepId, setRetryingStepId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   const handleDownload = async (artifactId: string, filename: string) => {
     try {
@@ -39,6 +58,40 @@ export const GenerationDetailPage: React.FC = () => {
       alert(errObj?.message || "Failed to download artifact.");
     } finally {
       setDownloadingArtifactId(null);
+    }
+  };
+
+  const handleConfirmCancel = async () => {
+    if (!gen) return;
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await cancelMutation.mutateAsync({
+        generationId: gen.id,
+        reason: cancelReason || "Cancelled by Control Center operator.",
+      });
+      setShowCancelModal(false);
+      setCancelReason("");
+      setActionSuccess("Generation successfully cancelled.");
+      refetch();
+    } catch (err: unknown) {
+      const errObj = err as { message?: string };
+      setActionError(errObj?.message || "Failed to cancel generation.");
+    }
+  };
+
+  const handleConfirmRetryStep = async (stepId: string) => {
+    if (!gen) return;
+    setActionError(null);
+    setActionSuccess(null);
+    try {
+      await retryStepMutation.mutateAsync({ stepId, generationId: gen.id });
+      setRetryingStepId(null);
+      setActionSuccess("Step retry dispatched to execution queue.");
+      refetch();
+    } catch (err: unknown) {
+      const errObj = err as { message?: string };
+      setActionError(errObj?.message || "Failed to retry step.");
     }
   };
 
@@ -55,6 +108,8 @@ export const GenerationDetailPage: React.FC = () => {
       />
     );
   }
+
+  const isCancellable = !["COMPLETED", "CANCELLED", "FAILED"].includes(gen.status);
 
   return (
     <div className="space-y-6 pb-12">
@@ -90,7 +145,22 @@ export const GenerationDetailPage: React.FC = () => {
           </div>
         </div>
 
+        {/* Operational Actions */}
         <div className="flex items-center gap-3">
+          {isCancellable && (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                setActionError(null);
+                setShowCancelModal(true);
+              }}
+              leftIcon={<StopCircle className="w-3.5 h-3.5" />}
+            >
+              Cancel Generation
+            </Button>
+          )}
+
           <Button
             variant="outline"
             size="sm"
@@ -102,6 +172,33 @@ export const GenerationDetailPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* Action Notification Banner */}
+      {actionSuccess && (
+        <div className="p-3.5 rounded-xl border border-emerald-900/60 bg-emerald-950/30 text-xs text-emerald-300 flex items-center justify-between font-mono">
+          <span>✓ {actionSuccess}</span>
+          <button
+            type="button"
+            onClick={() => setActionSuccess(null)}
+            className="text-emerald-400 hover:text-emerald-200"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="p-3.5 rounded-xl border border-rose-900/60 bg-rose-950/30 text-xs text-rose-300 flex items-center justify-between font-mono">
+          <span>⚠ {actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-rose-400 hover:text-rose-200"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Failure Diagnostic Alert (if present) */}
       {gen.failure_category && (
@@ -175,6 +272,12 @@ export const GenerationDetailPage: React.FC = () => {
               </span>
             </div>
             <div className="flex justify-between items-center py-1 border-b border-slate-800/40">
+              <span className="text-slate-400">Cancelled</span>
+              <span className="text-amber-400">
+                {gen.timestamps.cancelled_at ? formatDate(gen.timestamps.cancelled_at) : "—"}
+              </span>
+            </div>
+            <div className="flex justify-between items-center py-1 border-b border-slate-800/40">
               <span className="text-slate-400">Failed</span>
               <span className="text-rose-400">
                 {gen.timestamps.failed_at ? formatDate(gen.timestamps.failed_at) : "—"}
@@ -207,72 +310,101 @@ export const GenerationDetailPage: React.FC = () => {
           </div>
         ) : (
           <div className="divide-y divide-slate-800/60">
-            {gen.steps.map((step) => (
-              <div key={step.id} className="p-4 space-y-3 hover:bg-slate-900/40 transition-colors">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
-                  <div className="flex items-center gap-3">
-                    <span className="w-6 h-6 rounded-md bg-slate-800 flex items-center justify-center font-mono text-xs font-bold text-slate-200">
-                      {step.step_number}
-                    </span>
-                    <div>
-                      <h4 className="text-xs font-bold text-slate-100">{step.name}</h4>
-                      <span className="text-[11px] font-mono text-slate-500 uppercase tracking-wider">
-                        Role: {step.agent_role}
+            {gen.steps.map((step) => {
+              const isStepRetryable =
+                ["FAILED", "CANCELLED"].includes(step.status) &&
+                gen.status !== "COMPLETED";
+
+              return (
+                <div key={step.id} className="p-4 space-y-3 hover:bg-slate-900/40 transition-colors">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                    <div className="flex items-center gap-3">
+                      <span className="w-6 h-6 rounded-md bg-slate-800 flex items-center justify-center font-mono text-xs font-bold text-slate-200">
+                        {step.step_number}
                       </span>
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-100">{step.name}</h4>
+                        <span className="text-[11px] font-mono text-slate-500 uppercase tracking-wider">
+                          Role: {step.agent_role}
+                        </span>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-3">
-                    <Badge status={step.status} />
-                    <span className="text-[11px] font-mono text-slate-500">
-                      {formatDuration(step.started_at, step.completed_at)}
-                    </span>
-                  </div>
-                </div>
+                    <div className="flex items-center gap-3">
+                      <Badge status={step.status} />
+                      <span className="text-[11px] font-mono text-slate-500">
+                        {formatDuration(step.started_at, step.completed_at)}
+                      </span>
 
-                {/* Nested Agent Runs for this Step */}
-                {step.runs.length > 0 && (
-                  <div className="ml-9 rounded-lg border border-slate-800/60 bg-slate-950/60 p-3 space-y-2">
-                    <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 font-semibold">
-                      Run Attempts ({step.runs.length})
-                    </div>
-                    <div className="space-y-1.5">
-                      {step.runs.map((r) => (
-                        <div
-                          key={r.id}
-                          className="flex items-center justify-between gap-3 text-xs font-mono p-2 rounded bg-slate-900/60 border border-slate-800/40 hover:border-slate-700 transition-colors"
+                      {/* Retry Step Action Button */}
+                      {isStepRetryable && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setRetryingStepId(step.id)}
+                          isLoading={
+                            retryStepMutation.isPending &&
+                            retryingStepId === step.id
+                          }
+                          leftIcon={<RotateCcw className="w-3 h-3 text-amber-400" />}
                         >
-                          <div className="flex items-center gap-2">
-                            <span className="text-slate-300 font-semibold">
-                              Attempt #{r.run_number}
-                            </span>
-                            <span className="text-slate-500">({r.id.substring(0, 8)}...)</span>
-                            <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] text-slate-300">
-                              {r.runtime_type}
-                            </span>
-                            {r.model_name && (
-                              <span className="text-slate-400 text-[11px] truncate max-w-xs">
-                                {r.model_name}
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-3">
-                            <Badge status={r.status} />
-                            <Link
-                              to={`/agent-runs/${r.id}`}
-                              className="text-[11px] text-brand-400 hover:text-brand-300 hover:underline"
-                            >
-                              Inspect Run &rarr;
-                            </Link>
-                          </div>
-                        </div>
-                      ))}
+                          Retry Step
+                        </Button>
+                      )}
                     </div>
                   </div>
-                )}
-              </div>
-            ))}
+
+                  {/* Step Error Display */}
+                  {step.error_message && (
+                    <div className="ml-9 p-2 rounded bg-rose-950/30 border border-rose-900/40 text-[11px] font-mono text-rose-300">
+                      Error: {step.error_message}
+                    </div>
+                  )}
+
+                  {/* Nested Agent Runs for this Step */}
+                  {step.runs.length > 0 && (
+                    <div className="ml-9 rounded-lg border border-slate-800/60 bg-slate-950/60 p-3 space-y-2">
+                      <div className="text-[11px] uppercase tracking-wider font-mono text-slate-500 font-semibold">
+                        Run Attempts ({step.runs.length})
+                      </div>
+                      <div className="space-y-1.5">
+                        {step.runs.map((r) => (
+                          <div
+                            key={r.id}
+                            className="flex items-center justify-between gap-3 text-xs font-mono p-2 rounded bg-slate-900/60 border border-slate-800/40 hover:border-slate-700 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-slate-300 font-semibold">
+                                Attempt #{r.run_number}
+                              </span>
+                              <span className="text-slate-500">({r.id.substring(0, 8)}...)</span>
+                              <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] text-slate-300">
+                                {r.runtime_type}
+                              </span>
+                              {r.model_name && (
+                                <span className="text-slate-400 text-[11px] truncate max-w-xs">
+                                  {r.model_name}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-3">
+                              <Badge status={r.status} />
+                              <Link
+                                to={`/agent-runs/${r.id}`}
+                                className="text-[11px] text-brand-400 hover:text-brand-300 hover:underline"
+                              >
+                                Inspect Run &rarr;
+                              </Link>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -373,6 +505,96 @@ export const GenerationDetailPage: React.FC = () => {
 
       {/* Live Events Timeline Panel */}
       <LiveEventsPanel generationId={gen.id} />
+
+      {/* Cancel Confirmation Modal */}
+      {showCancelModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-400">
+              <div className="p-2 rounded-xl bg-rose-950/60 border border-rose-900/60">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">Cancel Generation Execution</h3>
+                <p className="text-xs text-slate-400">This will stop all in-flight steps and agent runs.</p>
+              </div>
+            </div>
+
+            <div className="space-y-2 font-mono text-xs">
+              <label className="text-slate-300 block">Operator Cancellation Reason (Optional):</label>
+              <textarea
+                value={cancelReason}
+                onChange={(e) => setCancelReason(e.target.value)}
+                placeholder="Reason for cancelling this generation..."
+                className="w-full h-20 p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-200 text-xs focus:border-brand-500 focus:outline-none resize-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowCancelModal(false)}
+                disabled={cancelMutation.isPending}
+              >
+                Dismiss
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={handleConfirmCancel}
+                isLoading={cancelMutation.isPending}
+                leftIcon={<StopCircle className="w-3.5 h-3.5" />}
+              >
+                Confirm Cancellation
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Retry Confirmation Modal */}
+      {retryingStepId && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-amber-400">
+              <div className="p-2 rounded-xl bg-amber-950/60 border border-amber-900/60">
+                <RotateCcw className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">Retry Generation Step</h3>
+                <p className="text-xs text-slate-400">
+                  This will dispatch a new execution attempt with the configured agent runtime.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 font-mono bg-slate-950/60 p-3 rounded-lg border border-slate-800">
+              Parent generation will resume the active BUILDING state and dispatch execution to Celery.
+            </p>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRetryingStepId(null)}
+                disabled={retryStepMutation.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleConfirmRetryStep(retryingStepId)}
+                isLoading={retryStepMutation.isPending}
+                leftIcon={<Play className="w-3.5 h-3.5" />}
+              >
+                Confirm Retry
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

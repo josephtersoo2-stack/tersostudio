@@ -4,10 +4,11 @@ import os
 import time
 
 from django.conf import settings
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Count, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -19,10 +20,14 @@ from apps.generations.enums import (
     GenerationStatus,
     StepStatus,
 )
-from apps.generations.exceptions import ArtifactStorageError
+from apps.generations.exceptions import ArtifactStorageError, InvalidStateTransitionError
 from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep
+from apps.generations.services.execution_service import ExecutionService
+from apps.generations.services.state_machine import GenerationStateMachine
 from apps.generations.storage import get_artifact_storage
 from apps.projects.models import Project
+from apps.realtime.event_publisher import GenerationEventPublisher
+from apps.realtime.events import EventType, NormalizedEvent
 
 from .permissions import IsStaffControlCenterUser
 from .serializers import (
@@ -31,6 +36,8 @@ from .serializers import (
     ControlCenterArtifactSerializer,
     ControlCenterGenerationDetailSerializer,
     ControlCenterGenerationListSerializer,
+    ControlCenterNestedAgentRunSerializer,
+    ControlCenterStepDetailSerializer,
     ControlCenterSummarySerializer,
 )
 
@@ -478,3 +485,191 @@ class ControlCenterArtifactDownloadView(APIView):
         response["Content-Disposition"] = f'attachment; filename="{safe_filename}"'
         response["Content-Length"] = str(len(file_bytes))
         return response
+
+
+class ControlCenterGenerationCancelView(APIView):
+    """Staff-only operational mutation to cancel active in-flight generations."""
+
+    permission_classes = [IsStaffControlCenterUser]
+
+    def post(self, request, generation_id, *args, **kwargs):
+        generation = get_object_or_404(
+            Generation.objects.select_related("project", "user", "workspace"),
+            id=generation_id,
+        )
+
+        non_cancellable = [
+            GenerationStatus.COMPLETED,
+            GenerationStatus.CANCELLED,
+            GenerationStatus.FAILED,
+        ]
+        if generation.status in non_cancellable:
+            return Response(
+                {
+                    "error": "cannot_cancel",
+                    "detail": f"Generation is in '{generation.status}' status and cannot be cancelled.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        reason = request.data.get("reason", "Cancelled by Control Center operator.")
+        now = timezone.now()
+
+        with transaction.atomic():
+            try:
+                updated_gen = GenerationStateMachine.transition(
+                    generation=generation,
+                    target_status=GenerationStatus.CANCELLED,
+                    reason=reason,
+                )
+            except InvalidStateTransitionError as exc:
+                return Response(
+                    {"error": "invalid_state_transition", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Cancel active/pending steps
+            generation.steps.filter(
+                status__in=[StepStatus.PENDING, StepStatus.RUNNING]
+            ).update(
+                status=StepStatus.CANCELLED,
+                completed_at=now,
+                updated_at=now,
+            )
+
+            # Cancel queued/running agent runs
+            AgentRun.objects.filter(
+                step__generation=generation,
+                status__in=[AgentRunStatus.QUEUED, AgentRunStatus.RUNNING],
+            ).update(
+                status=AgentRunStatus.CANCELLED,
+                completed_at=now,
+                updated_at=now,
+            )
+
+        # Broadcast realtime cancellation event
+        try:
+            publisher = GenerationEventPublisher()
+            publisher.publish(
+                NormalizedEvent(
+                    event_type=EventType.GENERATION_CANCELLED,
+                    generation_id=str(generation.id),
+                    payload={"reason": reason, "status": GenerationStatus.CANCELLED},
+                )
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to publish cancellation realtime event for {generation.id}: {exc}")
+
+        # Re-fetch full generation with prefetch
+        generation = (
+            Generation.objects.select_related("project", "user", "workspace")
+            .prefetch_related("steps", "steps__runs", "artifacts")
+            .get(id=generation.id)
+        )
+        return Response(
+            ControlCenterGenerationDetailSerializer(generation, context={"request": request}).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class ControlCenterStepRetryView(APIView):
+    """Staff-only operational mutation to retry a failed or cancelled step."""
+
+    permission_classes = [IsStaffControlCenterUser]
+
+    def post(self, request, step_id, *args, **kwargs):
+        step = get_object_or_404(
+            GenerationStep.objects.select_related("generation", "generation__project", "generation__user"),
+            id=step_id,
+        )
+
+        if step.status in [StepStatus.COMPLETED, StepStatus.RUNNING]:
+            return Response(
+                {
+                    "error": "cannot_retry",
+                    "detail": f"Step is currently in '{step.status}' status and cannot be retried.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        generation = step.generation
+        if generation.status == GenerationStatus.COMPLETED:
+            return Response(
+                {
+                    "error": "cannot_retry",
+                    "detail": "Cannot retry steps for a generation that has already completed.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # If parent generation is FAILED or CANCELLED, transition back to RETRYING -> BUILDING
+            if generation.status in [GenerationStatus.FAILED, GenerationStatus.CANCELLED]:
+                GenerationStateMachine.transition(
+                    generation=generation,
+                    target_status=GenerationStatus.RETRYING,
+                    reason=f"Step #{step.step_number} retry initiated by operator.",
+                )
+                GenerationStateMachine.transition(
+                    generation=generation,
+                    target_status=GenerationStatus.BUILDING,
+                    reason=f"Resumed BUILDING for retried step #{step.step_number}.",
+                )
+            elif generation.status == GenerationStatus.PAUSED:
+                GenerationStateMachine.transition(
+                    generation=generation,
+                    target_status=GenerationStatus.BUILDING,
+                    reason=f"Resumed from PAUSED for retried step #{step.step_number}.",
+                )
+            elif generation.status in [
+                GenerationStatus.DRAFT,
+                GenerationStatus.SPECIFICATION,
+                GenerationStatus.APPROVED,
+                GenerationStatus.PLANNING,
+            ]:
+                GenerationStateMachine.transition(
+                    generation=generation,
+                    target_status=GenerationStatus.BUILDING,
+                    reason=f"Transitioned to BUILDING for retried step #{step.step_number}.",
+                )
+
+            # Reset step
+            step.status = StepStatus.PENDING
+            step.error_message = ""
+            step.completed_at = None
+            step.save(update_fields=["status", "error_message", "completed_at", "updated_at"])
+
+            # Dispatch execution
+            agent_run = ExecutionService.create_and_dispatch(step)
+
+        # Broadcast realtime step retry event
+        try:
+            publisher = GenerationEventPublisher()
+            publisher.publish(
+                NormalizedEvent(
+                    event_type=EventType.TASK_STARTED,
+                    generation_id=str(generation.id),
+                    agent_run_id=str(agent_run.id),
+                    payload={
+                        "step_id": str(step.id),
+                        "step_number": step.step_number,
+                        "step_name": step.name,
+                        "run_number": agent_run.run_number,
+                        "action": "retry",
+                    },
+                )
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to publish retry realtime event for step {step.id}: {exc}")
+
+        step.refresh_from_db()
+        return Response(
+            {
+                "step": ControlCenterStepDetailSerializer(step, context={"request": request}).data,
+                "run": ControlCenterNestedAgentRunSerializer(agent_run).data,
+                "generation_id": str(generation.id),
+                "generation_status": generation.status,
+            },
+            status=status.HTTP_200_OK,
+        )
+

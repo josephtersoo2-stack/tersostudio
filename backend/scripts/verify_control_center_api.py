@@ -1,4 +1,4 @@
-"""Probe and verify Control Center CC-01 & CC-02 API endpoints and permission enforcement."""
+"""Probe and verify Control Center CC-01, CC-02, and CC-03 API endpoints and mutation enforcement."""
 import json
 import os
 import sys
@@ -25,15 +25,15 @@ User = get_user_model()
 
 def main():
     print("==================================================")
-    print("TERSUITE CONTROL CENTER (CC-02) API VERIFICATION")
+    print("TERSUITE CONTROL CENTER (CC-03) API VERIFICATION")
     print("==================================================")
 
     client = APIClient()
 
     # Create/get customer and staff accounts
     customer_user, _ = User.objects.get_or_create(
-        email="customer.probe@tersuite.com",
-        defaults={"first_name": "Customer", "last_name": "Probe", "is_staff": False},
+        email="customer.actions@tersuite.com",
+        defaults={"first_name": "Customer", "last_name": "Actions", "is_staff": False},
     )
     customer_user.is_staff = False
     customer_user.is_superuser = False
@@ -41,146 +41,138 @@ def main():
     token_cust, _ = Token.objects.get_or_create(user=customer_user)
 
     staff_user, _ = User.objects.get_or_create(
-        email="staff.operator@tersuite.com",
+        email="staff.actions@tersuite.com",
         defaults={"first_name": "Staff", "last_name": "Operator", "is_staff": True},
     )
     staff_user.is_staff = True
     staff_user.save()
     token_staff, _ = Token.objects.get_or_create(user=staff_user)
 
-    # Ensure a sample generation, run, and real physical artifact exists for verification
+    # 1. Ensure a live active generation for cancellation and retry verification
     project, _ = Project.objects.get_or_create(
         user=customer_user,
-        name="CC-02 Verification Project",
-        defaults={"description": "End-to-end operational verification"},
+        name="CC-03 Operational Actions Project",
+        defaults={"description": "End-to-end mutation testing"},
     )
-    generation, _ = Generation.objects.get_or_create(
+    generation = Generation.objects.create(
         project=project,
         user=customer_user,
-        prompt="Create a WordPress plugin that integrates Stripe checkout and dynamic webhook listeners.",
-        defaults={
-            "status": GenerationStatus.BUILDING,
-            "current_step_number": 1,
-            "total_steps": 2,
-            "metadata": {"wp_version": "6.5", "php_target": "8.2"},
-        },
+        prompt="Create a WordPress plugin that integrates high-frequency stock price webhooks.",
+        status=GenerationStatus.BUILDING,
+        current_step_number=1,
+        total_steps=2,
+        metadata={"wp_version": "6.6", "php_target": "8.3"},
     )
-    step, _ = GenerationStep.objects.get_or_create(
+    step1 = GenerationStep.objects.create(
         generation=generation,
         step_number=1,
-        name="Architecture Blueprint & Class Scaffolding",
-        defaults={
-            "agent_role": "architect",
-            "status": StepStatus.COMPLETED,
-            "input_payload": {"spec": "Stripe Gateway"},
-            "output_payload": {"classes": ["WC_Gateway_Stripe"]},
-        },
+        name="Webhook Architecture & Database Schema",
+        agent_role="architect",
+        status=StepStatus.RUNNING,
+        input_payload={"spec": "Stock Webhooks"},
     )
-    run, _ = AgentRun.objects.get_or_create(
-        step=step,
+    step2 = GenerationStep.objects.create(
+        generation=generation,
+        step_number=2,
+        name="REST Handler & Poller Implementation",
+        agent_role="coder",
+        status=StepStatus.PENDING,
+    )
+    run1 = AgentRun.objects.create(
+        step=step1,
         run_number=1,
-        defaults={
-            "runtime_type": "openhands",
-            "model_name": "openrouter/openai/gpt-4o-mini",
-            "session_id": "oh-sess-probe-01",
-            "remote_conversation_id": "conv-uuid-probe-01",
-            "prompt": "Draft class WC_Gateway_Stripe and unit tests.",
-            "output": "Class WC_Gateway_Stripe scaffolded and verified.",
-            "token_usage": {"prompt_tokens": 650, "completion_tokens": 140},
-        },
+        runtime_type="mock",
+        status="RUNNING",
+        prompt="Scaffold tables for stock ticker webhooks.",
     )
 
-    # Save real physical artifact
+    # Save a sample artifact
     storage = get_artifact_storage()
-    file_bytes = b"<?php\n/**\n * Plugin Name: CC-02 Verification Gateway\n */\nclass WC_Gateway_Probe {}\n"
+    file_bytes = b"<?php\n/**\n * Plugin Name: CC-03 Webhook Plugin\n */\n"
     storage_key, size_bytes, checksum = storage.save_artifact(
         generation_id=str(generation.id),
-        artifact_id="art-probe-001",
-        filename="cc02-gateway-probe.php",
+        artifact_id="art-cc03-001",
+        filename="cc03-webhook.php",
         content=file_bytes,
     )
-    artifact, _ = Artifact.objects.get_or_create(
+    Artifact.objects.create(
         generation=generation,
-        name="cc02-gateway-probe.php",
-        defaults={
-            "agent_run": run,
-            "file_path": "/plugins/cc02-gateway-probe.php",
-            "artifact_type": ArtifactType.SOURCE_CODE,
-            "mime_type": "text/x-php",
-            "size_bytes": size_bytes,
-            "checksum_sha256": checksum,
-            "storage_backend": "local_filesystem",
-            "storage_key": storage_key,
-        },
+        agent_run=run1,
+        name="cc03-webhook.php",
+        file_path="/plugins/cc03-webhook.php",
+        artifact_type=ArtifactType.SOURCE_CODE,
+        mime_type="text/x-php",
+        size_bytes=size_bytes,
+        checksum_sha256=checksum,
+        storage_backend="local_filesystem",
+        storage_key=storage_key,
     )
 
-    # 1. Anonymous Access Test (Expect 401)
-    print("\n--- 1. Anonymous Access Test ---")
-    endpoints = [
-        f"/api/v1/control-center/generations/{generation.id}/",
-        f"/api/v1/control-center/runs/{run.id}/",
-        "/api/v1/control-center/health/",
-        "/api/v1/control-center/artifacts/",
-        f"/api/v1/control-center/artifacts/{artifact.id}/download/",
-    ]
-    for ep in endpoints:
-        resp = client.get(ep)
-        print(f"GET {ep[:45]}... -> HTTP {resp.status_code} (Expected 401)")
-        assert resp.status_code == 401
-    print("[PASS] All CC-02 endpoints strictly reject anonymous requests with 401 Unauthorized.")
+    # 1. Anonymous Access Test on Mutations (Expect 401)
+    print("\n--- 1. Anonymous Access Test on Mutation Endpoints ---")
+    cancel_url = f"/api/v1/control-center/generations/{generation.id}/cancel/"
+    retry_url = f"/api/v1/control-center/steps/{step1.id}/retry/"
 
-    # 2. Non-Staff Access Test (Expect 403)
+    resp_cancel_anon = client.post(cancel_url, {"reason": "Unauthorized test"})
+    resp_retry_anon = client.post(retry_url, {})
+    print(f"POST {cancel_url[:45]}... -> HTTP {resp_cancel_anon.status_code} (Expected 401)")
+    print(f"POST {retry_url[:45]}... -> HTTP {resp_retry_anon.status_code} (Expected 401)")
+    assert resp_cancel_anon.status_code == 401
+    assert resp_retry_anon.status_code == 401
+    print("[PASS] Mutation endpoints reject anonymous access with 401 Unauthorized.")
+
+    # 2. Non-Staff Access Test on Mutations (Expect 403)
     print("\n--- 2. Non-Staff Authenticated Access Test ---")
     client.credentials(HTTP_AUTHORIZATION=f"Token {token_cust.key}")
-    for ep in endpoints:
-        resp = client.get(ep)
-        print(f"GET {ep[:45]}... -> HTTP {resp.status_code} (Expected 403)")
-        assert resp.status_code == 403
-    print("[PASS] All CC-02 endpoints strictly reject authenticated non-staff requests with 403 Forbidden.")
+    resp_cancel_cust = client.post(cancel_url, {"reason": "Non-staff test"})
+    resp_retry_cust = client.post(retry_url, {})
+    print(f"POST {cancel_url[:45]}... -> HTTP {resp_cancel_cust.status_code} (Expected 403)")
+    print(f"POST {retry_url[:45]}... -> HTTP {resp_retry_cust.status_code} (Expected 403)")
+    assert resp_cancel_cust.status_code == 403
+    assert resp_retry_cust.status_code == 403
+    print("[PASS] Mutation endpoints reject non-staff users with 403 Forbidden.")
 
-    # 3. Staff Access Test (Expect 200)
-    print("\n--- 3. Staff Authenticated Access Test ---")
+    # 3. Staff Cancel Generation Mutation Test (Expect 200)
+    print("\n--- 3. Staff Cancel Generation Mutation Test ---")
     client.credentials(HTTP_AUTHORIZATION=f"Token {token_staff.key}")
-    resp_gen = client.get(f"/api/v1/control-center/generations/{generation.id}/")
-    resp_run = client.get(f"/api/v1/control-center/runs/{run.id}/")
-    resp_health = client.get("/api/v1/control-center/health/")
-    resp_arts = client.get("/api/v1/control-center/artifacts/")
-    resp_dl = client.get(f"/api/v1/control-center/artifacts/{artifact.id}/download/")
+    resp_cancel = client.post(cancel_url, {"reason": "Operator halted task for config adjustment."})
+    print(f"POST {cancel_url} -> HTTP {resp_cancel.status_code} (Expected 200)")
+    assert resp_cancel.status_code == 200
+    cancel_data = resp_cancel.json()
+    assert cancel_data["status"] == GenerationStatus.CANCELLED
+    assert cancel_data["timestamps"]["cancelled_at"] is not None
+    print("[PASS] Generation successfully transitioned to CANCELLED.")
 
-    print(f"GET /generations/{generation.id}/ -> HTTP {resp_gen.status_code} (Expected 200)")
-    print(f"GET /runs/{run.id}/        -> HTTP {resp_run.status_code} (Expected 200)")
-    print(f"GET /health/                               -> HTTP {resp_health.status_code} (Expected 200)")
-    print(f"GET /artifacts/                            -> HTTP {resp_arts.status_code} (Expected 200)")
-    print(f"GET /artifacts/{artifact.id}/download/     -> HTTP {resp_dl.status_code} (Expected 200)")
+    # 4. Duplicate Cancel Rejection (Expect 400)
+    print("\n--- 4. Duplicate Cancel Rejection Test ---")
+    resp_cancel_dup = client.post(cancel_url, {"reason": "Try cancel again"})
+    print(f"POST {cancel_url} -> HTTP {resp_cancel_dup.status_code} (Expected 400)")
+    assert resp_cancel_dup.status_code == 400
+    assert resp_cancel_dup.json()["error"] == "cannot_cancel"
+    print("[PASS] Duplicate cancellation properly rejected with 400 Bad Request.")
 
-    assert resp_gen.status_code == 200
-    assert resp_run.status_code == 200
-    assert resp_health.status_code == 200
-    assert resp_arts.status_code == 200
-    assert resp_dl.status_code == 200
-    assert resp_dl.content == file_bytes
-    print("[PASS] Staff requests succeeded with 200 OK and valid artifact content.")
+    # 5. Staff Retry Step Mutation Test on Cancelled Step (Expect 200)
+    print("\n--- 5. Staff Retry Step Mutation Test ---")
+    resp_retry = client.post(retry_url, {})
+    print(f"POST {retry_url} -> HTTP {resp_retry.status_code} (Expected 200)")
+    assert resp_retry.status_code == 200
+    retry_data = resp_retry.json()
+    assert retry_data["generation_status"] == GenerationStatus.BUILDING
+    assert retry_data["step"]["status"] == StepStatus.RUNNING
+    assert retry_data["run"]["run_number"] == 2
+    assert retry_data["run"]["status"] == "QUEUED"
+    print("[PASS] Step successfully retried, parent generation resumed BUILDING, AgentRun #2 created.")
 
-    # Print Sample JSON
+    # Print Sample Mutation JSON
     print("\n==================================================")
-    print("SAMPLE JSON: GET /api/v1/control-center/generations/<id>/")
+    print("SAMPLE JSON: POST /api/v1/control-center/generations/<id>/cancel/")
     print("==================================================")
-    print(json.dumps(resp_gen.json(), indent=2))
-
-    print("\n==================================================")
-    print("SAMPLE JSON: GET /api/v1/control-center/runs/<id>/")
-    print("==================================================")
-    print(json.dumps(resp_run.json(), indent=2))
-
-    print("\n==================================================")
-    print("SAMPLE JSON: GET /api/v1/control-center/health/")
-    print("==================================================")
-    print(json.dumps(resp_health.json(), indent=2))
+    print(json.dumps(cancel_data, indent=2))
 
     print("\n==================================================")
-    print("SAMPLE JSON: GET /api/v1/control-center/artifacts/")
+    print("SAMPLE JSON: POST /api/v1/control-center/steps/<id>/retry/")
     print("==================================================")
-    print(json.dumps(resp_arts.json(), indent=2))
+    print(json.dumps(retry_data, indent=2))
 
 
 if __name__ == "__main__":

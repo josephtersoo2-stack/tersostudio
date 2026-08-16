@@ -6,9 +6,11 @@ from .views import (
     ControlCenterAgentRunsListView,
     ControlCenterArtifactDownloadView,
     ControlCenterArtifactsListView,
+    ControlCenterGenerationCancelView,
     ControlCenterGenerationDetailView,
     ControlCenterGenerationsListView,
     ControlCenterHealthView,
+    ControlCenterStepRetryView,
     ControlCenterSummaryView,
 )
 
@@ -18,6 +20,9 @@ urlpatterns = [
     # Generations
     path("generations/", ControlCenterGenerationsListView.as_view(), name="control-center-generations"),
     path("generations/<uuid:generation_id>/", ControlCenterGenerationDetailView.as_view(), name="control-center-generation-detail"),
+    path("generations/<uuid:generation_id>/cancel/", ControlCenterGenerationCancelView.as_view(), name="control-center-generation-cancel"),
+    # Steps
+    path("steps/<uuid:step_id>/retry/", ControlCenterStepRetryView.as_view(), name="control-center-step-retry"),
     # Agent Runs
     path("runs/", ControlCenterAgentRunsListView.as_view(), name="control-center-runs"),
     path("runs/<uuid:run_id>/", ControlCenterAgentRunDetailView.as_view(), name="control-center-run-detail"),

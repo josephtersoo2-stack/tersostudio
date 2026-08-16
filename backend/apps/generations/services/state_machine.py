@@ -77,7 +77,9 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.CANCELLED,
     },
     GenerationStatus.COMPLETED: set(),  # Terminal state
-    GenerationStatus.CANCELLED: set(),  # Terminal state
+    GenerationStatus.CANCELLED: {
+        GenerationStatus.RETRYING,
+    },
 }
 
 
