@@ -1,0 +1,66 @@
+[
+  {
+    "id": "wc-hpos-compatibility-declaration",
+    "title": "WooCommerce High-Performance Order Storage (HPOS) Compatibility Declaration",
+    "category": "WOOCOMMERCE",
+    "domain": "woocommerce",
+    "description": "WooCommerce 8.0+ uses High-Performance Order Storage (HPOS/Custom Order Tables) by default. Any extension interacting with orders must declare explicit compatibility using \\Automattic\\WooCommerce\\Utilities\\FeaturesUtil during the 'before_woocommerce_init' action hook.",
+    "rules": [
+      "Hook feature declaration strictly to 'before_woocommerce_init'.",
+      "Check class_exists( \\Automattic\\WooCommerce\\Utilities\\FeaturesUtil::class ) before calling declare_compatibility.",
+      "Declare custom_order_tables compatibility using FeaturesUtil::declare_compatibility( 'custom_order_tables', __FILE__, true ).",
+      "Never interact directly with wp_posts or wp_postmeta to read or write WooCommerce order records."
+    ],
+    "anti_patterns": [
+      "Declaring HPOS compatibility on 'init' or 'plugins_loaded' (too late; WooCommerce will flag extension as incompatible).",
+      "Omitting the class_exists check (causes fatal errors on non-WooCommerce installations).",
+      "Hardcoding direct SQL queries targeting wp_posts table for order queries."
+    ],
+    "patterns": [
+      {
+        "name": "Declare HPOS Compatibility",
+        "description": "Proper declaration of Custom Order Tables compatibility in main plugin file.",
+        "hook": "before_woocommerce_init",
+        "code": "add_action( 'before_woocommerce_init', function() {\n    if ( class_exists( \\Automattic\\WooCommerce\\Utilities\\FeaturesUtil::class ) ) {\n        \\Automattic\\WooCommerce\\Utilities\\FeaturesUtil::declare_compatibility(\n            'custom_order_tables',\n            __FILE__,\n            true\n        );\n    }\n} );"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.2",
+      "min_wc": "8.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "wc-order-crud-methods",
+    "title": "WooCommerce Order CRUD Operations and Metadata Access",
+    "category": "WOOCOMMERCE",
+    "domain": "woocommerce",
+    "description": "With HPOS, order data is stored in dedicated custom tables (wc_orders, wc_orders_meta). All order reads and modifications must use WC_Order getters, setters, and meta methods rather than WordPress core postmeta functions.",
+    "rules": [
+      "Fetch orders using wc_get_order( $order_id ) which returns WC_Order or false.",
+      "Read order metadata with $order->get_meta( '_terso_affiliate_id', true ).",
+      "Write order metadata with $order->update_meta_data( '_terso_affiliate_id', $affiliate_id ) and commit with $order->save().",
+      "Hook into order status transitions using 'woocommerce_order_status_completed' or 'woocommerce_order_status_changed'."
+    ],
+    "anti_patterns": [
+      "Using get_post_meta( $order_id, '_affiliate_id', true ) (returns empty on HPOS-enabled stores).",
+      "Using update_post_meta( $order_id, '_affiliate_id', $val ) without $order->save().",
+      "Modifying post_status in wp_posts to change order status."
+    ],
+    "patterns": [
+      {
+        "name": "Order Attribution Hook and Meta Persistence",
+        "description": "Safely reading and updating order metadata during checkout creation.",
+        "hook": "woocommerce_checkout_order_created",
+        "code": "add_action( 'woocommerce_checkout_order_created', function( $order ) {\n    if ( ! $order instanceof \\WC_Order ) {\n        return;\n    }\n    $referral_code = isset( $_COOKIE['terso_ref'] ) ? sanitize_text_field( wp_unslash( $_COOKIE['terso_ref'] ) ) : '';\n    if ( $referral_code ) {\n        $order->update_meta_data( '_terso_referral_code', $referral_code );\n        $order->save();\n    }\n} );"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.2",
+      "min_wc": "8.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  }
+]

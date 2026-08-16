@@ -1,0 +1,69 @@
+[
+  {
+    "id": "domain-affiliate-tracking-cookies",
+    "title": "Affiliate Referral Cookie Tracking and Attribution Engine",
+    "category": "DOMAIN_PATTERNS",
+    "domain": "affiliate",
+    "description": "Affiliate referral tracking captures URL parameters (e.g. ?ref=CODE or ?aff=123) upon visitor entry, stores a secure, tamper-proof cookie with a configurable expiration window, and attributes subsequent checkout conversions to the referring affiliate.",
+    "rules": [
+      "Detect referral parameters early in the WordPress lifecycle during the 'template_redirect' or 'init' hook.",
+      "Set tracking cookies with secure, httponly, and samesite (Lax/Strict) flags: setcookie( $name, $val, array( 'expires' => $expire, 'path' => COOKIEPATH, 'domain' => COOKIE_DOMAIN, 'secure' => is_ssl(), 'httponly' => true, 'samesite' => 'Lax' ) ).",
+      "Support configurable attribution models: 'First Touch' vs. 'Last Touch' attribution.",
+      "Track raw visits/clicks in an analytics table while respecting privacy (hash IP addresses with salt)."
+    ],
+    "anti_patterns": [
+      "Setting cookies after HTML output has started (causes 'headers already sent' warnings).",
+      "Storing sensitive affiliate data or raw customer PII inside client cookies.",
+      "Allowing unrestricted cookie expiration without operator configuration."
+    ],
+    "patterns": [
+      {
+        "name": "Referral Capture and Cookie Handler",
+        "description": "Intercepts referral query parameters and sets HTTP-only cookie.",
+        "hook": "template_redirect",
+        "code": "add_action( 'template_redirect', function() {\n    if ( is_admin() || wp_doing_ajax() ) {\n        return;\n    }\n    if ( ! isset( $_GET['ref'] ) ) {\n        return;\n    }\n    $ref_code = sanitize_text_field( wp_unslash( $_GET['ref'] ) );\n    $cookie_days = apply_filters( 'terso_referral_cookie_days', 30 );\n    $expires = time() + ( $cookie_days * DAY_IN_SECONDS );\n\n    setcookie(\n        'terso_ref',\n        $ref_code,\n        array(\n            'expires'  => $expires,\n            'path'     => COOKIEPATH ? COOKIEPATH : '/',\n            'domain'   => COOKIE_DOMAIN,\n            'secure'   => is_ssl(),\n            'httponly' => true,\n            'samesite' => 'Lax',\n        )\n    );\n} );"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "domain-affiliate-commission-state-machine",
+    "title": "Affiliate Commission Ledger State Machine and Refund Reversal",
+    "category": "DOMAIN_PATTERNS",
+    "domain": "affiliate",
+    "description": "Commission records must transition through a deterministic state machine (PENDING -> APPROVED -> PAYABLE -> PAID / REJECTED) to ensure financial integrity, prevent payouts on refunded orders, and enforce fraud rules.",
+    "rules": [
+      "Record commissions in status 'PENDING' immediately upon successful order placement.",
+      "Transition commissions to 'APPROVED' after the store refund/grace window expires (e.g. 30 days).",
+      "Hook 'woocommerce_order_status_refunded' and 'woocommerce_order_refunded' to immediately mark pending or approved commissions as 'REJECTED' with reason 'ORDER_REFUNDED'.",
+      "Prevent self-referrals: check if the purchasing customer's user ID or billing email matches the affiliate's registered user ID or payout email."
+    ],
+    "anti_patterns": [
+      "Directly paying out commissions on initial checkout without waiting for order settlement.",
+      "Failing to reverse or adjust commissions when an order is partially or fully refunded.",
+      "Allowing an affiliate to earn commissions by purchasing products with their own referral code."
+    ],
+    "patterns": [
+      {
+        "name": "Refund Reversal Handler",
+        "description": "Automated cancellation of commissions on WooCommerce order refund.",
+        "hook": "woocommerce_order_status_refunded",
+        "code": "add_action( 'woocommerce_order_status_refunded', function( $order_id ) {\n    global $wpdb;\n    $table_name = $wpdb->prefix . 'terso_commissions';\n    $wpdb->update(\n        $table_name,\n        array(\n            'status'     => 'rejected',\n            'updated_at' => current_time( 'mysql' ),\n        ),\n        array(\n            'order_id' => absint( $order_id ),\n            'status'   => 'pending',\n        ),\n        array( '%s', '%s' ),\n        array( '%d', '%s' )\n    );\n} );"
+      },
+      {
+        "name": "Self-Referral Prevention Guard",
+        "description": "Verifying that the customer is not the affiliate owner.",
+        "code": "public function is_self_referral( int $affiliate_user_id, string $billing_email, int $customer_user_id ): bool {\n    if ( $customer_user_id > 0 && $customer_user_id === $affiliate_user_id ) {\n        return true;\n    }\n    $affiliate_user = get_user_by( 'id', $affiliate_user_id );\n    if ( $affiliate_user && strtolower( trim( $affiliate_user->user_email ) ) === strtolower( trim( $billing_email ) ) ) {\n        return true;\n    }\n    return false;\n}"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  }
+]

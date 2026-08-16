@@ -1,0 +1,67 @@
+[
+  {
+    "id": "wp-db-dbdelta-schema-creation",
+    "title": "WordPress dbDelta Custom Table Schema and Migration Standards",
+    "category": "DATABASE",
+    "domain": "core",
+    "description": "WordPress utilizes dbDelta() for declarative schema creation and atomic migrations. dbDelta enforces strict formatting rules: exact spacing, capitalized keywords, and explicit primary key declarations are mandatory for error-free execution.",
+    "rules": [
+      "Include require_once( ABSPATH . 'wp-admin/includes/upgrade.php' ) before executing dbDelta().",
+      "Each field definition must be on its own line in the CREATE TABLE statement.",
+      "PRIMARY KEY definition must have exactly two spaces after 'PRIMARY KEY' (e.g. 'PRIMARY KEY  (id)').",
+      "Use KEY instead of INDEX for secondary indexes, and specify indexed columns in parentheses.",
+      "SQL keywords (CREATE TABLE, PRIMARY KEY, NOT NULL, DEFAULT, AUTO_INCREMENT, KEY) must be strictly UPPERCASE.",
+      "Use $wpdb->get_charset_collate() for table character sets and collation compatibility.",
+      "Store the installed schema version in wp_options to prevent redundant dbDelta execution on standard page requests."
+    ],
+    "anti_patterns": [
+      "Using single space after PRIMARY KEY: 'PRIMARY KEY (id)' (causes dbDelta to fail or re-create index every run).",
+      "Writing multiple field definitions on a single line.",
+      "Using backticks on data types or lowercase keywords like 'create table'.",
+      "Running dbDelta() on every 'init' hook instead of plugin activation or version-upgrade gates."
+    ],
+    "patterns": [
+      {
+        "name": "Declarative dbDelta Migration Script",
+        "description": "Standard WordPress custom table creation compliant with dbDelta rules.",
+        "code": "public static function create_tables() {\n    global $wpdb;\n    require_once ABSPATH . 'wp-admin/includes/upgrade.php';\n    $charset_collate = $wpdb->get_charset_collate();\n    $table_name = $wpdb->prefix . 'terso_commissions';\n\n    $sql = \"CREATE TABLE {$table_name} (\n        id bigint(20) unsigned NOT NULL AUTO_INCREMENT,\n        affiliate_id bigint(20) unsigned NOT NULL,\n        order_id bigint(20) unsigned DEFAULT 0 NOT NULL,\n        amount decimal(12,4) DEFAULT '0.0000' NOT NULL,\n        currency varchar(10) DEFAULT 'USD' NOT NULL,\n        status varchar(30) DEFAULT 'pending' NOT NULL,\n        created_at datetime DEFAULT CURRENT_TIMESTAMP NOT NULL,\n        updated_at datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP NOT NULL,\n        PRIMARY KEY  (id),\n        KEY affiliate_status (affiliate_id, status),\n        KEY order_id (order_id)\n    ) {$charset_collate};\";\n\n    dbDelta( $sql );\n    update_option( 'terso_db_version', '1.0.0' );\n}"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0",
+      "mysql_version": "5.7+"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "wp-db-custom-tables-vs-postmeta",
+    "title": "Custom Tables vs. wp_postmeta & wp_options Architecture Matrix",
+    "category": "DATABASE",
+    "domain": "core",
+    "description": "High-volume, transactional, and structured relational data must use custom database tables rather than postmeta or options to prevent database bloat, slow non-indexed queries, and autocommit performance degradation.",
+    "rules": [
+      "Use Custom Database Tables for high-frequency records (> 10,000 entries), event logs, financial transactions, commission ledgers, and analytics tracking.",
+      "Use Custom Post Types (CPT) + Postmeta for user-editable content nodes that require standard WordPress REST APIs, Gutenberg block editing, revision tracking, or admin edit screens.",
+      "Use wp_options strictly for global plugin settings, feature flags, and schema version numbers (avoid storing large unbounded arrays).",
+      "Always prefix table names using $wpdb->prefix to respect multisite and custom installation prefixes."
+    ],
+    "anti_patterns": [
+      "Storing thousands of high-velocity tracking events or analytics clicks in wp_postmeta.",
+      "Querying meta_key and meta_value with complex mathematical aggregations (e.g. SUM(meta_value)) without indexes.",
+      "Storing large unbounded growing logs in wp_options with autoload='yes' (causes entire site memory bloat on every request)."
+    ],
+    "patterns": [
+      {
+        "name": "Custom Table Query with Aggregation",
+        "description": "Fast indexed calculation on custom database table.",
+        "code": "global $wpdb;\n$table_name = $wpdb->prefix . 'terso_commissions';\n$total_payout = $wpdb->get_var( $wpdb->prepare(\n    \"SELECT COALESCE(SUM(amount), 0) FROM {$table_name} WHERE affiliate_id = %d AND status = %s\",\n    $affiliate_id,\n    'approved'\n) );"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  }
+]

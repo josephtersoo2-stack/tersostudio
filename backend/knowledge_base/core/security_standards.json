@@ -1,0 +1,140 @@
+[
+  {
+    "id": "wp-sec-nonce-verification",
+    "title": "WordPress Nonce Verification and CSRF Prevention",
+    "category": "SECURITY",
+    "domain": "core",
+    "description": "Every state-mutating request (POST, PUT, DELETE, AJAX, REST mutations, admin form submissions) must be guarded with cryptographic WordPress nonces to prevent Cross-Site Request Forgery (CSRF).",
+    "rules": [
+      "Generate nonces in forms using wp_nonce_field( 'action_name', '_wpnonce' ) or wp_create_nonce( 'action_name' ).",
+      "Verify nonces in traditional admin form handlers using check_admin_referer( 'action_name', '_wpnonce' ).",
+      "Verify nonces in AJAX handlers using check_ajax_referer( 'action_name', 'nonce_key' ).",
+      "Verify nonces in custom REST API mutating endpoints via X-WP-Nonce header or permission_callback wp_verify_nonce().",
+      "Never process or persist user inputs before verifying the nonce."
+    ],
+    "anti_patterns": [
+      "Processing POST/GET state changes without nonce verification.",
+      "Using a static or shared predictable string as a nonce.",
+      "Calling wp_verify_nonce() but ignoring its return value (failing open).",
+      "Using check_admin_referer() inside AJAX handlers (which causes standard HTTP redirect or die instead of JSON error response)."
+    ],
+    "patterns": [
+      {
+        "name": "Admin Form Nonce Verification",
+        "description": "Standard WordPress admin POST handler with nonce and capability check.",
+        "code": "if ( ! isset( $_POST['_wpnonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ), 'terso_save_settings_action' ) ) {\n    wp_die( esc_html__( 'Security check failed: invalid nonce.', 'terso-studio' ), 403 );\n}"
+      },
+      {
+        "name": "AJAX Nonce Verification",
+        "description": "JSON AJAX handler with check_ajax_referer.",
+        "code": "public function handle_ajax_request() {\n    check_ajax_referer( 'terso_ajax_action', 'security' );\n    if ( ! current_user_can( 'manage_options' ) ) {\n        wp_send_json_error( array( 'message' => esc_html__( 'Unauthorized access.', 'terso-studio' ) ), 403 );\n    }\n    // Process safe payload\n    wp_send_json_success( array( 'status' => 'ok' ) );\n}"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "wp-sec-capability-checks",
+    "title": "WordPress User Capability and Privilege Escalation Prevention",
+    "category": "SECURITY",
+    "domain": "core",
+    "description": "Authentication alone is insufficient; authorization must be verified explicitly via capability checks (current_user_can) before executing sensitive administrative or mutating business operations.",
+    "rules": [
+      "Always call current_user_can( $capability ) before processing administrative settings, data exports, schema migrations, or sensitive entity deletions.",
+      "Use specific granular capabilities (e.g. 'manage_options', 'edit_posts') rather than checking broad role names directly.",
+      "Check capabilities on every AJAX, REST, and admin-post endpoint independently of the menu registration visibility."
+    ],
+    "anti_patterns": [
+      "Relying solely on is_admin() or is_user_logged_in() to protect sensitive backend logic.",
+      "Checking roles like $user->roles[0] === 'administrator' directly instead of current_user_can().",
+      "Assuming UI hidden elements or menu permissions prevent unauthorized API requests."
+    ],
+    "patterns": [
+      {
+        "name": "Granular Capability Guard",
+        "description": "Strict capability validation before saving plugin configuration.",
+        "code": "if ( ! current_user_can( 'manage_options' ) ) {\n    wp_die( esc_html__( 'Sorry, you are not allowed to manage plugin settings.', 'terso-studio' ), 403 );\n}"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "wp-sec-sanitization-escaping",
+    "title": "Input Sanitization and Output Escaping Standards",
+    "category": "SECURITY",
+    "domain": "core",
+    "description": "All untrusted user input must be sanitized upon receipt before persistence or processing (Sanitize Early), and all variables rendered into HTML/attributes/JS must be contextually escaped (Escape Late) to completely prevent Cross-Site Scripting (XSS).",
+    "rules": [
+      "Sanitize strings with sanitize_text_field(), slugs with sanitize_title() or sanitize_key(), emails with sanitize_email(), integers with absint() or intval().",
+      "Always unslash before sanitizing: sanitize_text_field( wp_unslash( $_POST['field'] ) ).",
+      "Escape HTML body text with esc_html(), HTML attributes with esc_attr(), URLs with esc_url(), textareas with esc_textarea().",
+      "Escape rich HTML with wp_kses_post() or custom wp_kses() allowed tag schemas.",
+      "Escape inline JavaScript or JSON data with wp_json_encode() or esc_js()."
+    ],
+    "anti_patterns": [
+      "Directly echoing raw POST, GET, or database variables into HTML templates.",
+      "Double escaping (e.g. esc_html( esc_html( $val ) )).",
+      "Using strip_tags() instead of standard WordPress sanitization helpers.",
+      "Omitting wp_unslash() on superglobals before sanitizing."
+    ],
+    "patterns": [
+      {
+        "name": "Sanitize and Unslash Input",
+        "description": "Proper pipeline for reading and sanitizing superglobal input.",
+        "code": "$campaign_name = isset( $_POST['campaign_name'] ) ? sanitize_text_field( wp_unslash( $_POST['campaign_name'] ) ) : '';\n$referral_rate = isset( $_POST['referral_rate'] ) ? floatval( $_POST['referral_rate'] ) : 0.0;"
+      },
+      {
+        "name": "Contextual Output Escaping",
+        "description": "Rendering variables safely in HTML template attributes and text.",
+        "code": "<input type=\"text\" name=\"campaign_name\" value=\"<?php echo esc_attr( $campaign_name ); ?>\" class=\"regular-text\" />\n<p class=\"description\"><?php echo esc_html( $campaign_description ); ?></p>\n<a href=\"<?php echo esc_url( $dashboard_url ); ?>\"><?php esc_html_e( 'View Dashboard', 'terso-studio' ); ?></a>"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "wp-sec-sql-injection-prepare",
+    "title": "SQL Injection Defense via $wpdb->prepare",
+    "category": "SECURITY",
+    "domain": "core",
+    "description": "All dynamic variables incorporated into database queries must be safely parameterized through $wpdb->prepare() with explicit type specifiers (%s for string, %d for integer, %f for float).",
+    "rules": [
+      "Never interpolate or concatenate dynamic variables directly into SQL query strings.",
+      "Always use $wpdb->prepare( $sql, ...$args ) for dynamic queries.",
+      "Use explicit format specifiers: %d for integers/IDs, %f for prices/floats, %s for strings/dates.",
+      "For LIKE queries, construct placeholders with $wpdb->esc_like( $search ) and '%s'."
+    ],
+    "anti_patterns": [
+      "Direct string concatenation: \"SELECT * FROM {$table} WHERE user_id = \" . $_GET['id'].",
+      "Using addslashes() or mysql_real_escape_string() instead of $wpdb->prepare().",
+      "Passing table names or identifiers as %s parameter placeholders (table names cannot be parameterized; validate identifiers against a whitelist instead)."
+    ],
+    "patterns": [
+      {
+        "name": "Prepared Custom Table Select Query",
+        "description": "Safe parameterization of multiple variable types.",
+        "code": "global $wpdb;\n$table_name = $wpdb->prefix . 'terso_commissions';\n$sql = $wpdb->prepare(\n    \"SELECT * FROM {$table_name} WHERE affiliate_id = %d AND status = %s AND amount >= %f ORDER BY created_at DESC LIMIT %d\",\n    $affiliate_id,\n    $status,\n    $min_amount,\n    $limit\n);\n$results = $wpdb->get_results( $sql, ARRAY_A );"
+      },
+      {
+        "name": "Safe LIKE Search Query",
+        "description": "Correctly escaping LIKE wildcards before prepare.",
+        "code": "global $wpdb;\n$table_name = $wpdb->prefix . 'terso_affiliates';\n$search_term = $wpdb->esc_like( $raw_query );\n$wildcard_search = '%' . $search_term . '%';\n$sql = $wpdb->prepare(\n    \"SELECT id, name, referral_code FROM {$table_name} WHERE name LIKE %s OR referral_code LIKE %s LIMIT 50\",\n    $wildcard_search,\n    $wildcard_search\n);\n$matches = $wpdb->get_results( $sql, ARRAY_A );"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  }
+]

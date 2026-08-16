@@ -73,9 +73,13 @@ venv.bak/
 *.swo
 *~
 
-# Operating System
+# Operating System & Sync
 .DS_Store
 Thumbs.db
+desktop.ini
+.tmp.driveupload/
+*.driveupload/
+*.driveupload
 
 # OpenHands agent workspaces & local artifacts
 workspace/
@@ -85,5 +89,3 @@ logs/
 node_modules/
 dist/
 .env.production
-
-

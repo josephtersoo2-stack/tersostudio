@@ -1,0 +1,63 @@
+[
+  {
+    "id": "wp-rest-route-permission-callback",
+    "title": "WordPress REST API Route Registration and Permission Callbacks",
+    "category": "REST_API",
+    "domain": "core",
+    "description": "All custom WordPress REST API endpoints registered via register_rest_route() must declare an explicit permission_callback. Endpoints modifying state must verify authorization, nonces, or API tokens.",
+    "rules": [
+      "Always hook route registration to 'rest_api_init'.",
+      "Always define an explicit 'permission_callback' for every route.",
+      "Use '__return_true' ONLY for explicitly documented public read-only endpoints (e.g. public affiliate redirect resolution).",
+      "For authenticated endpoints, return a boolean or a WP_Error with a 401/403 HTTP status code from permission_callback.",
+      "Namespace all routes following the standard 'vendor/v{major}' convention (e.g. 'terso/v1')."
+    ],
+    "anti_patterns": [
+      "Omitting the 'permission_callback' argument (triggers PHP notices and severe security vulnerabilities in modern WordPress).",
+      "Using '__return_true' on POST, PUT, PATCH, or DELETE mutating endpoints.",
+      "Performing business logic or payload mutation inside the permission_callback function instead of the main callback."
+    ],
+    "patterns": [
+      {
+        "name": "Secure REST API Route Registration",
+        "description": "Standard REST endpoint registration with permission callback and schema validation.",
+        "hook": "rest_api_init",
+        "code": "add_action( 'rest_api_init', function() {\n    register_rest_route( 'terso/v1', '/affiliates/(?P<id>\\d+)/payout', array(\n        'methods'             => WP_REST_Server::CREATABLE,\n        'callback'            => array( 'Terso_Payout_Controller', 'process_payout' ),\n        'permission_callback' => function( $request ) {\n            if ( ! current_user_can( 'manage_options' ) ) {\n                return new WP_Error( 'rest_forbidden', esc_html__( 'Insufficient permissions.', 'terso-studio' ), array( 'status' => 403 ) );\n            }\n            return true;\n        },\n        'args'                => array(\n            'amount' => array(\n                'required'          => true,\n                'type'              => 'number',\n                'validate_callback' => function( $param, $request, $key ) {\n                    return is_numeric( $param ) && $param > 0;\n                },\n                'sanitize_callback' => 'floatval',\n            ),\n        ),\n    ) );\n} );"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  },
+  {
+    "id": "wp-rest-response-error-handling",
+    "title": "WordPress REST API Response and Error Standardization",
+    "category": "REST_API",
+    "domain": "core",
+    "description": "REST API controller callbacks should return instances of WP_REST_Response for successful operations or WP_Error for failure conditions, ensuring consistent HTTP status codes and JSON payloads.",
+    "rules": [
+      "Return new WP_REST_Response( $data, $status_code ) for all successful responses (200 OK, 201 Created, 204 No Content).",
+      "Return new WP_Error( $code, $message, array( 'status' => $http_status ) ) for business errors.",
+      "Wrap complex payload objects into arrays or DTOs before responding."
+    ],
+    "anti_patterns": [
+      "Calling wp_send_json_success() or wp_die() directly inside a REST callback (bypasses REST Server formatting).",
+      "Returning plain PHP arrays without explicit HTTP status codes on creation/mutation requests.",
+      "Returning 200 OK with error payload strings instead of proper 4xx/5xx HTTP error codes."
+    ],
+    "patterns": [
+      {
+        "name": "Standard REST Controller Callback",
+        "description": "Clean controller method returning WP_REST_Response and WP_Error.",
+        "code": "public function get_affiliate_stats( WP_REST_Request $request ) {\n    $affiliate_id = absint( $request->get_param( 'id' ) );\n    $stats = $this->stats_service->get_for_affiliate( $affiliate_id );\n\n    if ( ! $stats ) {\n        return new WP_Error( 'not_found', esc_html__( 'Affiliate not found.', 'terso-studio' ), array( 'status' => 404 ) );\n    }\n\n    return new WP_REST_Response( array(\n        'success' => true,\n        'data'    => $stats,\n    ), 200 );\n}"
+      }
+    ],
+    "compatibility": {
+      "min_wp": "6.0",
+      "min_php": "8.0"
+    },
+    "confidence": 1.0
+  }
+]
