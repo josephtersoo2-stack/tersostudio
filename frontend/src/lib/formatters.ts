@@ -1,5 +1,5 @@
 /**
- * Formatting utilities for dates, durations, token counts, and previews.
+ * Formatting utilities for dates, durations, token counts, file sizes, and previews.
  */
 
 export function formatDate(dateString: string | null | undefined): string {
@@ -66,4 +66,15 @@ export function formatTokens(tokenUsage: Record<string, unknown> | null | undefi
   }
 
   return "—";
+}
+
+export function formatFileSize(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return "0 B";
+  if (bytes === 0) return "0 B";
+
+  const k = 1024;
+  const sizes = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i] || "B"}`;
 }

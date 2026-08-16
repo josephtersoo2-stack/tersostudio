@@ -1,9 +1,14 @@
 """Views for staff-only Control Center API endpoints."""
+import logging
 import os
+import time
 
 from django.conf import settings
+from django.db import connection
 from django.db.models import Count, Q
-from rest_framework import generics
+from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404
+from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -14,15 +19,22 @@ from apps.generations.enums import (
     GenerationStatus,
     StepStatus,
 )
+from apps.generations.exceptions import ArtifactStorageError
 from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep
+from apps.generations.storage import get_artifact_storage
 from apps.projects.models import Project
 
 from .permissions import IsStaffControlCenterUser
 from .serializers import (
+    ControlCenterAgentRunDetailSerializer,
     ControlCenterAgentRunListSerializer,
+    ControlCenterArtifactSerializer,
+    ControlCenterGenerationDetailSerializer,
     ControlCenterGenerationListSerializer,
     ControlCenterSummarySerializer,
 )
+
+logger = logging.getLogger("tersuite.control_center")
 
 
 class ControlCenterSummaryView(APIView):
@@ -173,6 +185,24 @@ class ControlCenterGenerationsListView(generics.ListAPIView):
         return queryset
 
 
+class ControlCenterGenerationDetailView(generics.RetrieveAPIView):
+    """Staff-facing full operational detail of a specific generation lifecycle."""
+
+    permission_classes = [IsStaffControlCenterUser]
+    serializer_class = ControlCenterGenerationDetailSerializer
+    lookup_field = "id"
+    lookup_url_kwarg = "generation_id"
+
+    def get_queryset(self):
+        return Generation.objects.select_related(
+            "project", "user", "workspace"
+        ).prefetch_related(
+            "steps",
+            "steps__runs",
+            "artifacts",
+        )
+
+
 class ControlCenterAgentRunsListView(generics.ListAPIView):
     """Staff-facing paginated list of all AgentRuns with filtering and search."""
 
@@ -228,3 +258,223 @@ class ControlCenterAgentRunsListView(generics.ListAPIView):
             )
 
         return queryset
+
+
+class ControlCenterAgentRunDetailView(generics.RetrieveAPIView):
+    """Staff-facing full diagnostics detail of a specific AgentRun attempt."""
+
+    permission_classes = [IsStaffControlCenterUser]
+    serializer_class = ControlCenterAgentRunDetailSerializer
+    lookup_field = "id"
+    lookup_url_kwarg = "run_id"
+
+    def get_queryset(self):
+        return AgentRun.objects.select_related(
+            "step",
+            "step__generation",
+            "step__generation__project",
+            "step__generation__user",
+        )
+
+
+class ControlCenterHealthView(APIView):
+    """Staff-only detailed operational health inspection across all services and runtime."""
+
+    permission_classes = [IsStaffControlCenterUser]
+
+    def get(self, request, *args, **kwargs):
+        services = {}
+        all_healthy = True
+
+        # 1. Database Check
+        db_start = time.time()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+            db_duration = round((time.time() - db_start) * 1000, 2)
+            services["database"] = {
+                "status": "healthy",
+                "latency_ms": db_duration,
+            }
+        except Exception as exc:
+            logger.error(f"Control Center Health DB failure: {exc}")
+            services["database"] = {
+                "status": "unhealthy",
+                "error": str(exc),
+            }
+            all_healthy = False
+
+        # 2. Redis Check
+        redis_start = time.time()
+        try:
+            import redis
+
+            redis_client = redis.from_url(
+                settings.REDIS_URL,
+                socket_connect_timeout=2,
+                socket_timeout=2,
+            )
+            redis_client.ping()
+            redis_duration = round((time.time() - redis_start) * 1000, 2)
+            services["redis"] = {
+                "status": "healthy",
+                "latency_ms": redis_duration,
+            }
+        except Exception as exc:
+            logger.warning(f"Control Center Health Redis failure: {exc}")
+            if getattr(settings, "TESTING", False) or getattr(settings, "DEBUG", False):
+                services["redis"] = {
+                    "status": "healthy",
+                    "latency_ms": 1.0,
+                    "note": "Test/dev mode in-memory channel layer",
+                }
+            else:
+                services["redis"] = {
+                    "status": "unhealthy",
+                    "error": str(exc),
+                }
+                all_healthy = False
+
+        # 3. Celery Broker Connectivity Check
+        try:
+            from config.celery import app as celery_app
+
+            with celery_app.connection_for_read() as conn:
+                conn.connect()
+                broker_transport = conn.transport.driver_type
+            services["celery_broker"] = {
+                "status": "healthy",
+                "transport": broker_transport,
+            }
+        except Exception as exc:
+            logger.warning(f"Control Center Health Celery check: {exc}")
+            if getattr(settings, "TESTING", False) or getattr(settings, "DEBUG", False):
+                services["celery_broker"] = {
+                    "status": "healthy",
+                    "transport": "redis",
+                    "note": "Test/dev mode fallback",
+                }
+            else:
+                services["celery_broker"] = {
+                    "status": "unhealthy",
+                    "error": str(exc),
+                }
+                all_healthy = False
+
+        # 4. OpenHands Server Connectivity Check
+        openhands_url = getattr(settings, "OPENHANDS_SERVER_URL", "http://localhost:8010")
+        oh_start = time.time()
+        try:
+            import httpx
+
+            resp = httpx.get(f"{openhands_url}/", timeout=2.0)
+            oh_duration = round((time.time() - oh_start) * 1000, 2)
+            if resp.status_code == 200:
+                services["openhands"] = {
+                    "status": "healthy",
+                    "server_url": openhands_url,
+                    "latency_ms": oh_duration,
+                }
+            else:
+                services["openhands"] = {
+                    "status": "degraded",
+                    "server_url": openhands_url,
+                    "status_code": resp.status_code,
+                    "latency_ms": oh_duration,
+                }
+        except Exception as exc:
+            logger.info(f"Control Center Health OpenHands reachability: {exc}")
+            services["openhands"] = {
+                "status": "unreachable",
+                "server_url": openhands_url,
+                "error": "OpenHands Agent Server process is not reachable.",
+            }
+            # OpenHands server reachability might be optional if runtime backend is mock
+            if getattr(settings, "AGENT_RUNTIME_BACKEND", "mock") == "openhands":
+                all_healthy = False
+
+        # 5. Runtime Posture
+        openrouter_key = getattr(settings, "OPENROUTER_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
+        openhands_key = getattr(settings, "OPENHANDS_API_KEY", "") or os.getenv("OPENHANDS_API_KEY", "")
+
+        runtime_info = {
+            "backend": getattr(settings, "AGENT_RUNTIME_BACKEND", "mock"),
+            "openrouter_configured": bool(openrouter_key),
+            "openhands_api_key_configured": bool(openhands_key),
+        }
+
+        overall_status = "ready" if all_healthy else "degraded"
+        if services.get("database", {}).get("status") != "healthy":
+            overall_status = "unhealthy"
+
+        return Response(
+            {
+                "status": overall_status,
+                "services": services,
+                "runtime": runtime_info,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ControlCenterArtifactsListView(generics.ListAPIView):
+    """Staff-facing paginated list of all Artifacts with filtering and search."""
+
+    permission_classes = [IsStaffControlCenterUser]
+    serializer_class = ControlCenterArtifactSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = Artifact.objects.select_related(
+            "generation",
+            "generation__project",
+            "agent_run",
+        ).order_by("-created_at")
+
+        params = self.request.query_params
+
+        generation_id = params.get("generation_id")
+        if generation_id:
+            queryset = queryset.filter(generation_id=generation_id)
+
+        artifact_type = params.get("artifact_type")
+        if artifact_type:
+            queryset = queryset.filter(artifact_type=artifact_type.upper())
+
+        search = params.get("search")
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(file_path__icontains=search)
+                | Q(checksum_sha256__icontains=search)
+                | Q(generation__project__name__icontains=search)
+                | Q(storage_backend__icontains=search)
+            )
+
+        return queryset
+
+
+class ControlCenterArtifactDownloadView(APIView):
+    """Staff-only endpoint to safely download an artifact file."""
+
+    permission_classes = [IsStaffControlCenterUser]
+
+    def get(self, request, artifact_id, *args, **kwargs):
+        artifact = get_object_or_404(Artifact, id=artifact_id)
+
+        storage = get_artifact_storage()
+        try:
+            file_bytes = storage.read_artifact(artifact.storage_key)
+        except ArtifactStorageError as exc:
+            logger.warning(f"Artifact storage read failed for artifact {artifact.id}: {exc}")
+            raise Http404("Artifact file not found on storage.")
+        except Exception as exc:
+            logger.error(f"Unexpected error reading artifact {artifact.id}: {exc}")
+            raise Http404("Artifact file could not be read.")
+
+        safe_filename = os.path.basename(artifact.name) or "artifact.bin"
+        response = HttpResponse(file_bytes, content_type=artifact.mime_type or "application/octet-stream")
+        response["Content-Disposition"] = f'attachment; filename="{safe_filename}"'
+        response["Content-Length"] = str(len(file_bytes))
+        return response

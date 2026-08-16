@@ -1,7 +1,13 @@
 """Serializers for staff-only Control Center API endpoints."""
 from rest_framework import serializers
 
-from apps.generations.models import AgentRun, Generation
+from apps.generations.models import (
+    AgentRun,
+    Artifact,
+    Generation,
+    GenerationStep,
+    Workspace,
+)
 
 
 class ProjectSummarySerializer(serializers.Serializer):
@@ -190,3 +196,207 @@ class ControlCenterAgentRunListSerializer(serializers.ModelSerializer):
         if len(output) > 180:
             return output[:177] + "..."
         return output
+
+
+# ==============================================================================
+# CC-02 Detail & Operational Serializers
+# ==============================================================================
+
+
+class ControlCenterWorkspaceSerializer(serializers.ModelSerializer):
+    """Full operational view of a generation workspace."""
+
+    class Meta:
+        model = Workspace
+        fields = [
+            "id",
+            "workspace_path",
+            "storage_type",
+            "is_active",
+            "disk_usage_bytes",
+            "metadata",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class ControlCenterArtifactSerializer(serializers.ModelSerializer):
+    """Operational artifact view with project and generation context."""
+
+    generation_id = serializers.UUIDField(source="generation.id", read_only=True)
+    project_name = serializers.CharField(source="generation.project.name", read_only=True)
+    agent_run_id = serializers.UUIDField(source="agent_run.id", read_only=True, allow_null=True)
+
+    class Meta:
+        model = Artifact
+        fields = [
+            "id",
+            "generation_id",
+            "project_name",
+            "agent_run_id",
+            "name",
+            "file_path",
+            "artifact_type",
+            "mime_type",
+            "size_bytes",
+            "checksum_sha256",
+            "storage_backend",
+            "storage_key",
+            "metadata",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class ControlCenterNestedAgentRunSerializer(serializers.ModelSerializer):
+    """Lightweight nested run item under a step."""
+
+    class Meta:
+        model = AgentRun
+        fields = [
+            "id",
+            "run_number",
+            "runtime_type",
+            "status",
+            "model_name",
+            "session_id",
+            "remote_conversation_id",
+            "failure_category",
+            "started_at",
+            "completed_at",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ControlCenterStepDetailSerializer(serializers.ModelSerializer):
+    """Detailed step view with nested run attempts."""
+
+    runs = ControlCenterNestedAgentRunSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = GenerationStep
+        fields = [
+            "id",
+            "step_number",
+            "name",
+            "agent_role",
+            "status",
+            "input_payload",
+            "output_payload",
+            "error_message",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+            "runs",
+        ]
+        read_only_fields = fields
+
+
+class ControlCenterGenerationDetailSerializer(serializers.ModelSerializer):
+    """Full operational view of a generation lifecycle, steps, workspace, and artifacts."""
+
+    project = serializers.SerializerMethodField()
+    user = serializers.SerializerMethodField()
+    timestamps = serializers.SerializerMethodField()
+    steps = ControlCenterStepDetailSerializer(many=True, read_only=True)
+    workspace = serializers.SerializerMethodField()
+    artifacts = ControlCenterArtifactSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Generation
+        fields = [
+            "id",
+            "project",
+            "user",
+            "prompt",
+            "status",
+            "current_step_number",
+            "total_steps",
+            "metadata",
+            "failure_category",
+            "error_message",
+            "timestamps",
+            "steps",
+            "workspace",
+            "artifacts",
+        ]
+        read_only_fields = fields
+
+    def get_project(self, obj: Generation) -> dict:
+        return {
+            "id": str(obj.project.id),
+            "name": obj.project.name,
+        }
+
+    def get_user(self, obj: Generation) -> dict:
+        return {
+            "id": str(obj.user.id),
+            "email": obj.user.email,
+        }
+
+    def get_timestamps(self, obj: Generation) -> dict:
+        return {
+            "created_at": obj.created_at.isoformat() if obj.created_at else None,
+            "updated_at": obj.updated_at.isoformat() if obj.updated_at else None,
+            "completed_at": obj.completed_at.isoformat() if obj.completed_at else None,
+            "failed_at": obj.failed_at.isoformat() if obj.failed_at else None,
+            "cancelled_at": obj.cancelled_at.isoformat() if obj.cancelled_at else None,
+            "paused_at": obj.paused_at.isoformat() if obj.paused_at else None,
+        }
+
+    def get_workspace(self, obj: Generation):
+        if hasattr(obj, "workspace") and obj.workspace:
+            return ControlCenterWorkspaceSerializer(obj.workspace).data
+        return None
+
+
+class ControlCenterAgentRunDetailSerializer(serializers.ModelSerializer):
+    """Full diagnostics view of a specific AgentRun execution attempt."""
+
+    generation = serializers.SerializerMethodField()
+    step = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AgentRun
+        fields = [
+            "id",
+            "generation",
+            "step",
+            "run_number",
+            "runtime_type",
+            "status",
+            "model_name",
+            "session_id",
+            "remote_conversation_id",
+            "prompt",
+            "output",
+            "token_usage",
+            "failure_category",
+            "error_details",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_generation(self, obj: AgentRun) -> dict:
+        gen = obj.step.generation
+        return {
+            "id": str(gen.id),
+            "status": gen.status,
+            "project_name": gen.project.name,
+            "user_email": gen.user.email,
+        }
+
+    def get_step(self, obj: AgentRun) -> dict:
+        step = obj.step
+        return {
+            "id": str(step.id),
+            "name": step.name,
+            "step_number": step.step_number,
+        }

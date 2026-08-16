@@ -36,3 +36,35 @@ export interface AgentRunFilters {
   step_id?: string;
   search?: string;
 }
+
+// CC-02 Detail Interface
+
+export interface ControlCenterAgentRunDetail {
+  id: string;
+  generation: {
+    id: string;
+    status: string;
+    project_name: string;
+    user_email: string;
+  };
+  step: {
+    id: string;
+    name: string;
+    step_number: number;
+  };
+  run_number: number;
+  runtime_type: string;
+  status: string;
+  model_name: string;
+  session_id: string;
+  remote_conversation_id: string;
+  prompt: string;
+  output: string;
+  token_usage: Record<string, unknown>;
+  failure_category: string;
+  error_details: Record<string, unknown>;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}

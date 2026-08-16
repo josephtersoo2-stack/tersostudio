@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { Layers, Search, Filter, AlertCircle, RefreshCw } from "lucide-react";
 import { useControlCenterGenerations } from "./generationsApi";
 import { formatDate } from "@/lib/formatters";
@@ -176,15 +177,20 @@ export const GenerationsPage: React.FC = () => {
                   >
                     {/* Generation Prompt Preview */}
                     <td className="py-3.5 px-4 max-w-xs">
-                      <div className="font-mono text-[11px] text-slate-500 truncate" title={gen.id}>
-                        {gen.id.substring(0, 8)}...
-                      </div>
-                      <div
-                        className="text-slate-200 line-clamp-2 mt-0.5"
-                        title={gen.prompt_preview}
+                      <Link
+                        to={`/generations/${gen.id}`}
+                        className="group/link block"
                       >
-                        {gen.prompt_preview}
-                      </div>
+                        <div className="font-mono text-[11px] text-brand-400 group-hover/link:underline truncate" title={gen.id}>
+                          {gen.id.substring(0, 8)}... &rarr;
+                        </div>
+                        <div
+                          className="text-slate-200 group-hover/link:text-white line-clamp-2 mt-0.5"
+                          title={gen.prompt_preview}
+                        >
+                          {gen.prompt_preview}
+                        </div>
+                      </Link>
                     </td>
 
                     {/* Project */}

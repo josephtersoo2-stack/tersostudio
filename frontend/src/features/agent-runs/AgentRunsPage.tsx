@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Link } from "react-router-dom";
 import { Cpu, Search, Filter, RefreshCw, AlertCircle, Clock } from "lucide-react";
 import { useControlCenterAgentRuns } from "./agentRunsApi";
 import { formatDate, formatDuration, formatTokens } from "@/lib/formatters";
@@ -192,20 +193,22 @@ export const AgentRunsPage: React.FC = () => {
                   >
                     {/* Run & Prompt */}
                     <td className="py-3.5 px-4 max-w-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-[11px] font-semibold text-slate-300">
-                          Attempt #{run.run_number}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-500">
-                          ({run.id.substring(0, 8)}...)
-                        </span>
-                      </div>
-                      <div
-                        className="text-slate-400 line-clamp-2 mt-1"
-                        title={run.prompt_preview}
-                      >
-                        {run.prompt_preview}
-                      </div>
+                      <Link to={`/agent-runs/${run.id}`} className="group/link block">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[11px] font-semibold text-brand-400 group-hover/link:underline">
+                            Attempt #{run.run_number} &rarr;
+                          </span>
+                          <span className="font-mono text-[10px] text-slate-500">
+                            ({run.id.substring(0, 8)}...)
+                          </span>
+                        </div>
+                        <div
+                          className="text-slate-400 group-hover/link:text-slate-200 line-clamp-2 mt-1"
+                          title={run.prompt_preview}
+                        >
+                          {run.prompt_preview}
+                        </div>
+                      </Link>
                     </td>
 
                     {/* Generation & Step */}
@@ -214,7 +217,12 @@ export const AgentRunsPage: React.FC = () => {
                         Step {run.step_number}: {run.step_name}
                       </div>
                       <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-mono mt-0.5">
-                        <span>Gen: {run.generation_id.substring(0, 8)}...</span>
+                        <Link
+                          to={`/generations/${run.generation_id}`}
+                          className="text-slate-400 hover:text-brand-300 hover:underline"
+                        >
+                          Gen: {run.generation_id.substring(0, 8)}...
+                        </Link>
                         <span>·</span>
                         <span className="text-slate-400">{run.user_email}</span>
                       </div>

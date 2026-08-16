@@ -100,3 +100,58 @@ export async function apiRequest<T>(
 
   return (await response.json()) as T;
 }
+
+export async function downloadFile(
+  endpoint: string,
+  fallbackFilename: string = "download.bin"
+): Promise<void> {
+  const url = endpoint.startsWith("http")
+    ? endpoint
+    : `${API_BASE_URL.replace(/\/$/, "")}/${endpoint.replace(/^\//, "")}`;
+
+  const token = getStoredToken();
+  const reqHeaders: Record<string, string> = {};
+  if (token) {
+    reqHeaders.Authorization = `Token ${token}`;
+  }
+
+  const response = await fetch(url, {
+    headers: reqHeaders,
+  });
+
+  if (response.status === 401) {
+    clearStoredToken();
+    window.dispatchEvent(new CustomEvent("tersuite:auth:unauthorized"));
+    throw new ApiError("Session expired or unauthorized. Please log in.", 401);
+  }
+
+  if (response.status === 403) {
+    window.dispatchEvent(new CustomEvent("tersuite:auth:forbidden"));
+    throw new ApiError("Staff privileges are required to download artifacts.", 403);
+  }
+
+  if (!response.ok) {
+    throw new ApiError(`Failed to download file (status ${response.status})`, response.status);
+  }
+
+  const blob = await response.blob();
+
+  // Extract filename from Content-Disposition if present
+  let filename = fallbackFilename;
+  const disposition = response.headers.get("Content-Disposition");
+  if (disposition && disposition.includes("filename=")) {
+    const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
+    if (matches && matches[1]) {
+      filename = matches[1].replace(/['"]/g, "");
+    }
+  }
+
+  const blobUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(blobUrl);
+}

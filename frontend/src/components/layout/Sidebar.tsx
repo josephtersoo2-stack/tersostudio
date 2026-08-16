@@ -22,9 +22,9 @@ const navItems: NavItem[] = [
   { name: "Overview Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { name: "Generations", href: "/generations", icon: Layers },
   { name: "Agent Runs", href: "/agent-runs", icon: Cpu },
+  { name: "Runtime Health", href: "/runtime-health", icon: Activity },
+  { name: "Artifacts", href: "/artifacts", icon: Package },
   { name: "Projects", href: "/projects", icon: FolderGit2, disabled: true },
-  { name: "Artifacts", href: "/artifacts", icon: Package, disabled: true },
-  { name: "Runtime Health", href: "/health", icon: Activity, disabled: true },
 ];
 
 export const Sidebar: React.FC = () => {
@@ -39,7 +39,7 @@ export const Sidebar: React.FC = () => {
           <div className="text-sm font-bold text-slate-100 tracking-tight flex items-center gap-1.5">
             Tersuite Studio
             <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-brand-950 border border-brand-800/60 text-brand-300">
-              CC-01
+              CC-02
             </span>
           </div>
           <p className="text-[11px] text-slate-400">Control Center</p>
