@@ -156,7 +156,46 @@ Every major component must strictly pass through the 7-stage lifecycle before co
 
 ---
 
+## 🖥️ Operations & Control Center (CC-01)
+
+Tersuite includes an internal **Control Center** dashboard (`frontend/`) providing real-time operational visibility into backend multi-tenant generation lifecycles, Celery asynchronous execution queues, and OpenHands SDK runtime health.
+
+### 1. Backend Control Center API
+- Endpoint prefix: `/api/v1/control-center/`
+- Staff permission required (`is_staff=True` or `is_superuser=True`).
+- Endpoints:
+  - `GET /api/v1/control-center/summary/` — Global metrics & runtime posture.
+  - `GET /api/v1/control-center/generations/` — Paginated, filtered, and searchable generation lifecycles.
+  - `GET /api/v1/control-center/runs/` — Low-level agent execution attempts and token statistics.
+
+### 2. Frontend Development & Build
+The Control Center frontend is built with React 18, TypeScript, Vite, and Tailwind CSS.
+
+```bash
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start local development server
+npm run dev
+
+# Compile production bundle
+npm run build
+```
+
+Environment configuration in `frontend/.env`:
+```env
+VITE_API_BASE_URL=http://localhost:8000/api/v1
+VITE_WS_BASE_URL=ws://localhost:8000
+```
+
+---
+
 ## 🗺️ Roadmap & Documentation
 
 For the comprehensive 25-phase roadmap, architectural milestones, and MVP release strategy, refer to:
 👉 [**docs/TERSUITE-IMPLEMENTATION-ROADMAP.md**](docs/TERSUITE-IMPLEMENTATION-ROADMAP.md)
+👉 [**docs/TERSUITE-CONTROL-CENTER-CC-01-SPEC.md**](docs/TERSUITE-CONTROL-CENTER-CC-01-SPEC.md)
+

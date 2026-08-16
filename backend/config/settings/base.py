@@ -47,6 +47,8 @@ INSTALLED_APPS = [
     # Domain Apps (Phase 2)
     "apps.projects.apps.ProjectsConfig",
     "apps.generations.apps.GenerationsConfig",
+    # Control Center (CC-01)
+    "apps.control_center.apps.ControlCenterConfig",
 ]
 
 MIDDLEWARE = [
