@@ -187,6 +187,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 agent=agent,
                 workspace=workspace,
                 max_iteration_per_run=config.max_iterations,
+                visualizer=None,
                 callbacks=[live_event_callback],
             )
 
