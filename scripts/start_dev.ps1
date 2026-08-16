@@ -1,12 +1,16 @@
 # Tersuite AI Studio Local Services Startup Script
 # Launches Django ASGI Backend, Celery Worker, and React Control Center
 
-$RootDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RootDir = Split-Path -Parent $ScriptDir
 $BackendDir = Join-Path $RootDir "backend"
 $FrontendDir = Join-Path $RootDir "frontend"
 
+$PythonExe = Join-Path $BackendDir ".venv\Scripts\python.exe"
+$CeleryExe = Join-Path $BackendDir ".venv\Scripts\celery.exe"
+
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host "TERSUITE AI STUDIO — STARTING LOCAL SERVICES" -ForegroundColor Cyan
+Write-Host "TERSUITE AI STUDIO - STARTING LOCAL SERVICES" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 
 # Check PostgreSQL (port 5432) & Redis (port 6379)
@@ -28,15 +32,15 @@ if (-not $redisCheck) {
 
 # 1. Start Django Backend in a separate window
 Write-Host "Starting Django Backend on http://127.0.0.1:8000..." -ForegroundColor Cyan
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$BackendDir'; .\.venv\Scripts\python.exe manage.py runserver 127.0.0.1:8000"
+Start-Process powershell -WorkingDirectory $BackendDir -ArgumentList "-NoExit", "-Command", "& '$PythonExe' manage.py runserver 127.0.0.1:8000"
 
 # 2. Start Celery Worker in a separate window
 Write-Host "Starting Celery Background Worker (solo pool)..." -ForegroundColor Cyan
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$BackendDir'; .\.venv\Scripts\celery.exe -A config worker --loglevel=info -P solo"
+Start-Process powershell -WorkingDirectory $BackendDir -ArgumentList "-NoExit", "-Command", "& '$CeleryExe' -A config worker --loglevel=info -P solo"
 
 # 3. Start React Control Center Frontend in a separate window
 Write-Host "Starting React Control Center Frontend on http://localhost:5173..." -ForegroundColor Cyan
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$FrontendDir'; npm.cmd run dev"
+Start-Process powershell -WorkingDirectory $FrontendDir -ArgumentList "-NoExit", "-Command", "npm.cmd run dev"
 
 Write-Host "==================================================" -ForegroundColor Green
 Write-Host "ALL SERVICES LAUNCHED SUCCESSFULLY" -ForegroundColor Green
