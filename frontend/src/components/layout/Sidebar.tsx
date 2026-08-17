@@ -23,13 +23,13 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { name: "Overview Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { name: "Projects", href: "/projects", icon: FolderGit2 },
+  { name: "Knowledge Base", href: "/knowledge-base", icon: BookOpen },
   { name: "Generations", href: "/generations", icon: Layers },
   { name: "Agent Runs", href: "/agent-runs", icon: Cpu },
   { name: "Runtime Health", href: "/runtime-health", icon: Activity },
   { name: "Artifacts", href: "/artifacts", icon: Package },
-  { name: "Projects", href: "/projects", icon: FolderGit2, disabled: true, badge: "Phase 5+" },
-  { name: "Knowledge Base", href: "/knowledge", icon: BookOpen, disabled: true, badge: "Phase 5+" },
-  { name: "Sandboxes", href: "/sandboxes", icon: Boxes, disabled: true, badge: "Phase 5+" },
+  { name: "Sandboxes", href: "/sandboxes", icon: Boxes, disabled: true, badge: "Phase 12+" },
 ];
 
 export const Sidebar: React.FC = () => {

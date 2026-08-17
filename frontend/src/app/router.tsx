@@ -9,6 +9,8 @@ import { AgentRunsPage } from "@/features/agent-runs/AgentRunsPage";
 import { AgentRunDetailPage } from "@/features/agent-runs/AgentRunDetailPage";
 import { RuntimeHealthPage } from "@/features/health/RuntimeHealthPage";
 import { ArtifactsPage } from "@/features/artifacts/ArtifactsPage";
+import { ProjectsPage } from "@/features/projects/ProjectsPage";
+import { KnowledgeBasePage } from "@/features/knowledge/KnowledgeBasePage";
 
 export const router = createBrowserRouter([
   {
@@ -24,6 +26,18 @@ export const router = createBrowserRouter([
           {
             path: "/dashboard",
             element: <DashboardPage />,
+          },
+          {
+            path: "/projects",
+            element: <ProjectsPage />,
+          },
+          {
+            path: "/knowledge-base",
+            element: <KnowledgeBasePage />,
+          },
+          {
+            path: "/knowledge",
+            element: <Navigate to="/knowledge-base" replace />,
           },
           {
             path: "/generations",

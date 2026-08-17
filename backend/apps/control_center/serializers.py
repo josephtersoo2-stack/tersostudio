@@ -8,6 +8,7 @@ from apps.generations.models import (
     GenerationStep,
     Workspace,
 )
+from apps.projects.models import Project
 
 
 class ProjectSummarySerializer(serializers.Serializer):
@@ -72,6 +73,11 @@ class RuntimeSummarySerializer(serializers.Serializer):
     openhands_api_key_configured = serializers.BooleanField()
 
 
+class KnowledgeSummarySerializer(serializers.Serializer):
+    total = serializers.IntegerField()
+    categories = serializers.DictField(child=serializers.IntegerField())
+
+
 class ControlCenterSummarySerializer(serializers.Serializer):
     projects = ProjectSummarySerializer()
     generations = GenerationSummarySerializer()
@@ -79,6 +85,7 @@ class ControlCenterSummarySerializer(serializers.Serializer):
     steps = StepSummarySerializer()
     artifacts = ArtifactSummarySerializer()
     runtime = RuntimeSummarySerializer()
+    knowledge_units = KnowledgeSummarySerializer(required=False)
 
 
 class ControlCenterGenerationListSerializer(serializers.ModelSerializer):
@@ -123,16 +130,14 @@ class ControlCenterGenerationListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_prompt_preview(self, obj: Generation) -> str:
-        prompt = obj.prompt or ""
-        if len(prompt) > 140:
-            return prompt[:137] + "..."
-        return prompt
+        if not obj.prompt:
+            return ""
+        return obj.prompt[:137] + "..." if len(obj.prompt) > 140 else obj.prompt
 
     def get_error_message_preview(self, obj: Generation) -> str:
-        err = obj.error_message or ""
-        if len(err) > 140:
-            return err[:137] + "..."
-        return err
+        if not obj.error_message:
+            return ""
+        return obj.error_message[:137] + "..." if len(obj.error_message) > 140 else obj.error_message
 
     def get_workspace_id(self, obj: Generation):
         if hasattr(obj, "workspace") and obj.workspace:
@@ -141,17 +146,15 @@ class ControlCenterGenerationListSerializer(serializers.ModelSerializer):
 
 
 class ControlCenterAgentRunListSerializer(serializers.ModelSerializer):
-    """Staff-facing AgentRun list item with parent generation/step context and safe previews."""
+    """Staff-facing agent run list item with generation and step context."""
 
-    generation_id = serializers.UUIDField(source="step.generation.id", read_only=True)
-    generation_status = serializers.CharField(source="step.generation.status", read_only=True)
-    project_id = serializers.UUIDField(source="step.generation.project.id", read_only=True)
-    project_name = serializers.CharField(source="step.generation.project.name", read_only=True)
-    user_id = serializers.UUIDField(source="step.generation.user.id", read_only=True)
-    user_email = serializers.CharField(source="step.generation.user.email", read_only=True)
     step_id = serializers.UUIDField(source="step.id", read_only=True)
-    step_name = serializers.CharField(source="step.name", read_only=True)
     step_number = serializers.IntegerField(source="step.step_number", read_only=True)
+    step_name = serializers.CharField(source="step.name", read_only=True)
+    agent_role = serializers.CharField(source="step.agent_role", read_only=True)
+    generation_id = serializers.UUIDField(source="step.generation.id", read_only=True)
+    project_name = serializers.CharField(source="step.generation.project.name", read_only=True)
+    user_email = serializers.CharField(source="step.generation.user.email", read_only=True)
     prompt_preview = serializers.SerializerMethodField()
     output_preview = serializers.SerializerMethodField()
 
@@ -159,15 +162,13 @@ class ControlCenterAgentRunListSerializer(serializers.ModelSerializer):
         model = AgentRun
         fields = [
             "id",
-            "generation_id",
-            "generation_status",
-            "project_id",
-            "project_name",
-            "user_id",
-            "user_email",
             "step_id",
-            "step_name",
             "step_number",
+            "step_name",
+            "agent_role",
+            "generation_id",
+            "project_name",
+            "user_email",
             "run_number",
             "runtime_type",
             "status",
@@ -186,25 +187,74 @@ class ControlCenterAgentRunListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_prompt_preview(self, obj: AgentRun) -> str:
-        prompt = obj.prompt or ""
-        if len(prompt) > 140:
-            return prompt[:137] + "..."
-        return prompt
+        if not obj.prompt:
+            return ""
+        return obj.prompt[:137] + "..." if len(obj.prompt) > 140 else obj.prompt
 
     def get_output_preview(self, obj: AgentRun) -> str:
-        output = obj.output or ""
-        if len(output) > 180:
-            return output[:177] + "..."
-        return output
+        if not obj.output:
+            return ""
+        return obj.output[:137] + "..." if len(obj.output) > 140 else obj.output
 
 
-# ==============================================================================
-# CC-02 Detail & Operational Serializers
-# ==============================================================================
+class ControlCenterUserSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    email = serializers.CharField()
+
+
+class ControlCenterProjectSummarySerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+
+
+class ControlCenterNestedAgentRunSerializer(serializers.ModelSerializer):
+    """Compact serializer for AgentRun nested within GenerationStep."""
+
+    class Meta:
+        model = AgentRun
+        fields = [
+            "id",
+            "run_number",
+            "runtime_type",
+            "status",
+            "model_name",
+            "session_id",
+            "remote_conversation_id",
+            "failure_category",
+            "started_at",
+            "completed_at",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class ControlCenterNestedStepSerializer(serializers.ModelSerializer):
+    """Step serializer nested inside Generation Detail with runs."""
+
+    runs = ControlCenterNestedAgentRunSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = GenerationStep
+        fields = [
+            "id",
+            "step_number",
+            "name",
+            "agent_role",
+            "status",
+            "input_payload",
+            "output_payload",
+            "error_message",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
+            "runs",
+        ]
+        read_only_fields = fields
 
 
 class ControlCenterWorkspaceSerializer(serializers.ModelSerializer):
-    """Full operational view of a generation workspace."""
+    """Workspace serializer for Generation Detail."""
 
     class Meta:
         model = Workspace
@@ -222,7 +272,7 @@ class ControlCenterWorkspaceSerializer(serializers.ModelSerializer):
 
 
 class ControlCenterArtifactSerializer(serializers.ModelSerializer):
-    """Operational artifact view with project and generation context."""
+    """Artifact serializer with download metadata."""
 
     generation_id = serializers.UUIDField(source="generation.id", read_only=True)
     project_name = serializers.CharField(source="generation.project.name", read_only=True)
@@ -250,36 +300,19 @@ class ControlCenterArtifactSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ControlCenterNestedAgentRunSerializer(serializers.ModelSerializer):
-    """Lightweight nested run item under a step."""
-
-    class Meta:
-        model = AgentRun
-        fields = [
-            "id",
-            "run_number",
-            "runtime_type",
-            "status",
-            "model_name",
-            "session_id",
-            "remote_conversation_id",
-            "failure_category",
-            "started_at",
-            "completed_at",
-            "created_at",
-        ]
-        read_only_fields = fields
-
-
 class ControlCenterStepDetailSerializer(serializers.ModelSerializer):
-    """Detailed step view with nested run attempts."""
+    """Full detail of a specific GenerationStep."""
 
+    generation_id = serializers.UUIDField(source="generation.id", read_only=True)
+    project_name = serializers.CharField(source="generation.project.name", read_only=True)
     runs = ControlCenterNestedAgentRunSerializer(many=True, read_only=True)
 
     class Meta:
         model = GenerationStep
         fields = [
             "id",
+            "generation_id",
+            "project_name",
             "step_number",
             "name",
             "agent_role",
@@ -297,14 +330,14 @@ class ControlCenterStepDetailSerializer(serializers.ModelSerializer):
 
 
 class ControlCenterGenerationDetailSerializer(serializers.ModelSerializer):
-    """Full operational view of a generation lifecycle, steps, workspace, and artifacts."""
+    """Full operational view of a Generation including steps, runs, workspace, and artifacts."""
 
-    project = serializers.SerializerMethodField()
-    user = serializers.SerializerMethodField()
-    timestamps = serializers.SerializerMethodField()
-    steps = ControlCenterStepDetailSerializer(many=True, read_only=True)
+    project = ControlCenterProjectSummarySerializer(read_only=True)
+    user = ControlCenterUserSummarySerializer(read_only=True)
+    steps = ControlCenterNestedStepSerializer(many=True, read_only=True)
     workspace = serializers.SerializerMethodField()
     artifacts = ControlCenterArtifactSerializer(many=True, read_only=True)
+    timestamps = serializers.SerializerMethodField()
 
     class Meta:
         model = Generation
@@ -326,26 +359,14 @@ class ControlCenterGenerationDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-    def get_project(self, obj: Generation) -> dict:
-        return {
-            "id": str(obj.project.id),
-            "name": obj.project.name,
-        }
-
-    def get_user(self, obj: Generation) -> dict:
-        return {
-            "id": str(obj.user.id),
-            "email": obj.user.email,
-        }
-
     def get_timestamps(self, obj: Generation) -> dict:
         return {
-            "created_at": obj.created_at.isoformat() if obj.created_at else None,
-            "updated_at": obj.updated_at.isoformat() if obj.updated_at else None,
-            "completed_at": obj.completed_at.isoformat() if obj.completed_at else None,
-            "failed_at": obj.failed_at.isoformat() if obj.failed_at else None,
-            "cancelled_at": obj.cancelled_at.isoformat() if obj.cancelled_at else None,
-            "paused_at": obj.paused_at.isoformat() if obj.paused_at else None,
+            "created_at": obj.created_at,
+            "updated_at": obj.updated_at,
+            "completed_at": obj.completed_at,
+            "failed_at": obj.failed_at,
+            "cancelled_at": obj.cancelled_at,
+            "paused_at": obj.paused_at,
         }
 
     def get_workspace(self, obj: Generation):
@@ -400,3 +421,59 @@ class ControlCenterAgentRunDetailSerializer(serializers.ModelSerializer):
             "name": step.name,
             "step_number": step.step_number,
         }
+
+
+class ControlCenterProjectListSerializer(serializers.ModelSerializer):
+    """Staff-facing project list item with owner information and generation metrics."""
+
+    user = ControlCenterUserSummarySerializer(read_only=True)
+    generations_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = Project
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "plugin_slug",
+            "user",
+            "description",
+            "wordpress_version",
+            "php_version",
+            "metadata",
+            "generations_count",
+            "is_archived",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class KnowledgeUnitListSerializer(serializers.Serializer):
+    """List serialization for Knowledge Base units."""
+
+    id = serializers.CharField()
+    title = serializers.CharField()
+    category = serializers.CharField()
+    domain = serializers.CharField()
+    description = serializers.CharField()
+    rules_count = serializers.IntegerField()
+    anti_patterns_count = serializers.IntegerField()
+    patterns_count = serializers.IntegerField()
+    compatibility = serializers.DictField()
+    confidence = serializers.FloatField()
+
+
+class KnowledgeUnitDetailSerializer(serializers.Serializer):
+    """Full detail serialization for a specific Knowledge Unit."""
+
+    id = serializers.CharField()
+    title = serializers.CharField()
+    category = serializers.CharField()
+    domain = serializers.CharField()
+    description = serializers.CharField()
+    rules = serializers.ListField(child=serializers.CharField())
+    patterns = serializers.ListField()
+    anti_patterns = serializers.ListField(child=serializers.CharField())
+    compatibility = serializers.DictField()
+    confidence = serializers.FloatField()

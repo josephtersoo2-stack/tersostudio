@@ -60,6 +60,11 @@ export interface RuntimeMetrics {
   openhands_api_key_configured: boolean;
 }
 
+export interface KnowledgeMetrics {
+  total: number;
+  categories: Record<string, number>;
+}
+
 export interface ControlCenterSummary {
   projects: ProjectMetrics;
   generations: GenerationMetrics;
@@ -67,4 +72,5 @@ export interface ControlCenterSummary {
   steps: StepMetrics;
   artifacts: ArtifactMetrics;
   runtime: RuntimeMetrics;
+  knowledge_units?: KnowledgeMetrics;
 }

@@ -28,6 +28,7 @@ from apps.generations.storage import get_artifact_storage
 from apps.projects.models import Project
 from apps.realtime.event_publisher import GenerationEventPublisher
 from apps.realtime.events import EventType, NormalizedEvent
+from knowledge_base.engine import get_knowledge_engine
 
 from .permissions import IsStaffControlCenterUser
 from .serializers import (
@@ -37,8 +38,11 @@ from .serializers import (
     ControlCenterGenerationDetailSerializer,
     ControlCenterGenerationListSerializer,
     ControlCenterNestedAgentRunSerializer,
+    ControlCenterProjectListSerializer,
     ControlCenterStepDetailSerializer,
     ControlCenterSummarySerializer,
+    KnowledgeUnitDetailSerializer,
+    KnowledgeUnitListSerializer,
 )
 
 logger = logging.getLogger("tersuite.control_center")
@@ -132,6 +136,25 @@ class ControlCenterSummaryView(APIView):
             "openhands_api_key_configured": bool(openhands_key),
         }
 
+        # 7. Knowledge Base Metrics
+        engine = get_knowledge_engine()
+        try:
+            units = engine.load_all()
+            total_ku = len(units)
+            categories_ku = {}
+            for u in units:
+                cat_val = u.category.value
+                categories_ku[cat_val] = categories_ku.get(cat_val, 0) + 1
+        except Exception as exc:
+            logger.warning(f"Failed to load knowledge units in summary: {exc}")
+            total_ku = 0
+            categories_ku = {}
+
+        knowledge_summary = {
+            "total": total_ku,
+            "categories": categories_ku,
+        }
+
         data = {
             "projects": {
                 "total": total_projects,
@@ -143,6 +166,7 @@ class ControlCenterSummaryView(APIView):
             "steps": steps_by_status,
             "artifacts": artifacts_by_type,
             "runtime": runtime_summary,
+            "knowledge_units": knowledge_summary,
         }
 
         serializer = ControlCenterSummarySerializer(data)
@@ -672,4 +696,106 @@ class ControlCenterStepRetryView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ControlCenterProjectListView(generics.ListAPIView):
+    """Staff-only paginated list endpoint for viewing all projects with owner details and generation counts."""
+
+    permission_classes = [IsStaffControlCenterUser]
+    serializer_class = ControlCenterProjectListSerializer
+    pagination_class = StandardResultsSetPagination
+
+    def get_queryset(self):
+        queryset = Project.objects.select_related("user").annotate(
+            generations_count=Count("generations")
+        ).order_by("-created_at")
+
+        is_archived = self.request.query_params.get("is_archived")
+        if is_archived is not None and is_archived.lower() in ["true", "false"]:
+            queryset = queryset.filter(is_archived=(is_archived.lower() == "true"))
+
+        search = self.request.query_params.get("search")
+        if search:
+            search = search.strip()
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(slug__icontains=search)
+                | Q(plugin_slug__icontains=search)
+                | Q(user__email__icontains=search)
+            )
+
+        return queryset
+
+
+class ControlCenterKnowledgeListView(APIView):
+    """Staff-only directory endpoint for querying WordPress engineering knowledge units."""
+
+    permission_classes = [IsStaffControlCenterUser]
+
+    def get(self, request, *args, **kwargs):
+        category = request.query_params.get("category")
+        domain = request.query_params.get("domain")
+        search = request.query_params.get("search")
+        min_conf_str = request.query_params.get("min_confidence", "0.0")
+
+        try:
+            min_conf = float(min_conf_str)
+        except (ValueError, TypeError):
+            min_conf = 0.0
+
+        engine = get_knowledge_engine()
+        units = engine.query(
+            category=category if category and category.upper() != "ALL" else None,
+            domain=domain if domain else None,
+            keywords=search if search else None,
+            min_confidence=min_conf,
+        )
+
+        items = []
+        for u in units:
+            items.append(
+                {
+                    "id": u.id,
+                    "title": u.title,
+                    "category": u.category.value,
+                    "domain": u.domain,
+                    "description": u.description,
+                    "rules_count": len(u.rules),
+                    "anti_patterns_count": len(u.anti_patterns),
+                    "patterns_count": len(u.patterns),
+                    "compatibility": u.compatibility,
+                    "confidence": u.confidence,
+                }
+            )
+
+        serializer = KnowledgeUnitListSerializer(items, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ControlCenterKnowledgeDetailView(APIView):
+    """Staff-only detail endpoint for viewing full rules, patterns, and anti-patterns of a KnowledgeUnit."""
+
+    permission_classes = [IsStaffControlCenterUser]
+
+    def get(self, request, unit_id, *args, **kwargs):
+        engine = get_knowledge_engine()
+        unit = engine.get_unit_by_id(unit_id)
+        if not unit:
+            raise Http404(f"Knowledge unit '{unit_id}' not found.")
+
+        data = {
+            "id": unit.id,
+            "title": unit.title,
+            "category": unit.category.value,
+            "domain": unit.domain,
+            "description": unit.description,
+            "rules": unit.rules,
+            "patterns": unit.patterns,
+            "anti_patterns": unit.anti_patterns,
+            "compatibility": unit.compatibility,
+            "confidence": unit.confidence,
+        }
+        serializer = KnowledgeUnitDetailSerializer(data)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 

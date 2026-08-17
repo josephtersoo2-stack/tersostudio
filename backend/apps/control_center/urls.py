@@ -10,6 +10,9 @@ from .views import (
     ControlCenterGenerationDetailView,
     ControlCenterGenerationsListView,
     ControlCenterHealthView,
+    ControlCenterKnowledgeDetailView,
+    ControlCenterKnowledgeListView,
+    ControlCenterProjectListView,
     ControlCenterStepRetryView,
     ControlCenterSummaryView,
 )
@@ -17,6 +20,11 @@ from .views import (
 urlpatterns = [
     # Summary
     path("summary/", ControlCenterSummaryView.as_view(), name="control-center-summary"),
+    # Projects
+    path("projects/", ControlCenterProjectListView.as_view(), name="control-center-projects"),
+    # Knowledge Base
+    path("knowledge/", ControlCenterKnowledgeListView.as_view(), name="control-center-knowledge-list"),
+    path("knowledge/<str:unit_id>/", ControlCenterKnowledgeDetailView.as_view(), name="control-center-knowledge-detail"),
     # Generations
     path("generations/", ControlCenterGenerationsListView.as_view(), name="control-center-generations"),
     path("generations/<uuid:generation_id>/", ControlCenterGenerationDetailView.as_view(), name="control-center-generation-detail"),
