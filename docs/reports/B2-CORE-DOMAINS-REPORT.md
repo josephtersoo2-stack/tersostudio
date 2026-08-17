@@ -4,11 +4,11 @@
 - **Milestone**: B2 — Core Identity, Product, Project, Site, and Conversation Domains
 - **Status**: COMPLETED & VERIFIED
 - **Baseline Git Commit (B2_BASE_SHA)**: `b651815cf380174f8df347a8d754a287f4e9a8bb`
-- **Published B2 Git Commit**: `6fa8d46f78617d620d5bdbcb2851aeef43bee7e6`
+- **Published B2 Code Git Commit**: `0150f31f111474076d9358dac3f4c7c14bc7f069`
 - **Branch**: `feature/b2-core-domains`
-- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32031817345](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32031817345)
-- **CI Status & Conclusion**: Completed / Success (All 12 validation steps passed)
-- **Test Suite Status**: 223 Passed, 1 Skipped (Live LLM API test without credentials), 0 Failed
+- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32052323974](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32052323974)
+- **CI Status & Conclusion**: Completed / Success (All steps passed)
+- **Test Suite Status**: 234 Passed, 1 Skipped (Live LLM API test without credentials), 0 Failed
 - **Django System Check**: 0 Issues
 - **Migration Integrity Check**: Clean (`makemigrations --check --dry-run` reported No changes detected)
 
@@ -36,6 +36,8 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
   - `find_forbidden_json_key`: Comprehensive recursive scan detecting secret keys (passwords, tokens, api keys, credentials, app passwords, jwt).
   - `validate_safe_json_object`: Enforces strict dictionary type, payload size bounds ($\le 256\text{ KB}$), and zero-secret policies.
   - `normalize_wordpress_url`: Normalizes site URLs by enforcing standard `http`/`https` protocols, lowercased hostnames, and automatically stripping userinfo, query parameters, and fragments.
+- **Exception Envelope Normalization (`apps.core.exceptions`)**:
+  - All DRF exceptions and custom domain exceptions return the standardized `{ "error": { "code": "...", "message": "...", "status_code": ..., "details": ... } }` contract envelope.
 
 ### 2.2. Organizations & Multi-Tenancy Domain (`apps.organizations`)
 - **Models**:
@@ -56,8 +58,10 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
 - **Models**:
   - `WordPressProduct`: Authoritative product definition (`kind="PLUGIN"`, `display_name`, `slug`, `version`, `wordpress_version`, `php_version`, `is_archived`).
   - `PluginTarget`: `OneToOneField(WordPressProduct)` storing `plugin_slug`, `text_domain`, `namespace_prefix`, and `main_file`.
-- **Plugin-Only Policy**:
-  - Creation of `THEME` products is strictly prohibited and rejected with `400 Bad Request` (`invalid_product_kind`).
+- **Plugin-Only Policy & Route Restrictions**:
+  - Direct creation (`POST /products/`), replacement (`PUT`), and hard deletion (`DELETE`) are disallowed via API returning `405 Method Not Allowed`.
+  - Products are provisioned safely via the Project creation workflow or service layer.
+  - Creation of `THEME` products is strictly prohibited and rejected with `400 Bad Request` (`unsupported_product_kind`).
 - **Service Layer**:
   - `create_plugin_product`: Deterministically derives PSR-4 compliant namespace prefixes (e.g. `affiliate-hub` $\rightarrow$ `AffiliateHub`) and main entrypoint file names.
 
@@ -65,6 +69,8 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
 - **Models**:
   - `WordPressSite`: Stores site metadata, environment (`DEVELOPMENT`, `STAGING`, `PRODUCTION`), and normalized URL.
   - `SiteProfileSnapshot`: Strictly immutable sequential version snapshots (`version = 1, 2, ...`) of WordPress core version, PHP version, active plugins, active theme, server metadata, and health metrics.
+- **Nested Profile Routes**:
+  - Snapshot operations are scoped under `/api/v1/sites/{site_id}/profiles/` (GET list, POST create) and `/api/v1/sites/{site_id}/profiles/{snapshot_id}/` (GET retrieve).
 - **Integrity & Security**:
   - Every snapshot computes and persists a deterministic SHA-256 checksum over sorted JSON sections.
   - Storage of passwords, authentication tokens, application passwords, or database credentials is strictly rejected.
@@ -73,7 +79,10 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
 ### 2.5. Projects & Site Association Domain (`apps.projects`)
 - **Models**:
   - `Project`: Organization-owned container linked 1:1 to a `WordPressProduct`.
-  - `ProjectSite`: Junction linking an organization's WordPress site to a Project with explicit role purpose (`DEVELOPMENT`, `STAGING`, `PRIMARY`, `TEST`).
+  - `ProjectSite`: Junction linking an organization's WordPress site to a Project with explicit role purpose (`DEVELOPMENT`, `STAGING`, `PRIMARY`, `TEST`) defaulting to `PRIMARY`.
+- **Route Protections**:
+  - Root `DELETE /api/v1/projects/{id}/` returns `405 Method Not Allowed` (projects are archived).
+  - Site detachment is exposed via `/api/v1/projects/{id}/sites/{project_site_id}/` DELETE.
 - **Backward Compatibility**:
   - Project model and serializer expose property aliases (`plugin_slug`, `wordpress_version`, `php_version`, `user`) sourcing from `WordPressProduct` and `created_by`.
 - **Service Layer (`ProjectService`)**:
@@ -83,110 +92,97 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
 ### 2.6. Conversations & Messages Domain (`apps.conversations`)
 - **Models**:
   - `Conversation`: Project-scoped discussion thread with monotonic `next_message_sequence` counter and archive lifecycle support.
-  - `ConversationMessage`: Immutable message log with ordered sequence numbers and client idempotency key support (`client_message_id`).
+  - `ConversationMessage`: Immutable message log with ordered sequence numbers and client idempotency key support (`client_message_id` as UUID).
 - **Service Layer (`ConversationMessageService`)**:
   - `append_user_message`: Transactional row-level locking (`select_for_update`) ensuring deterministic sequential numbering and duplicate submission idempotency.
-  - Prevents agent invocation or generation triggers during message posting.
+  - Returns `idempotent_replay: false` (HTTP 201) on new message, and `idempotent_replay: true` (HTTP 200) on replay.
+  - Message endpoints are append-only (`GET` and `POST` only; mutation/deletion returns `405`).
 
 ### 2.7. Generations Domain Tenant Migration & Scoping (`apps.generations`)
 - **Data Model Migration**:
   - Migrated `Generation` to inherit `OrganizationOwnedModel`.
   - Backfilled existing generations with `organization_id` derived directly from parent `Project.organization_id`.
+  - Cross-tenant validation: `clean()` and `save()` enforce `generation.organization == project.organization`.
   - Replaced legacy `user_id` indexes with compound `(organization, status)` index.
 - **Execution & State Machine Stability**:
   - `GenerationStateMachine` automatically clears error and failure fields upon recovery from `RETRYING` to active states.
   - `ExecutionService` preserves execution dispatch and mock runtime compatibility.
 
-### 2.8. Control Center & Operational Staff API (`apps.control_center`)
-- **Cross-Tenant Visibility**:
-  - Maintained complete staff-only cross-tenant operational visibility over all projects, generations, agent runs, artifacts, and knowledge units.
-  - Updated all querysets and serializers to read `created_by` and `product__plugin_target` relationships seamlessly.
-- **Actions API**:
-  - Verified staff operational mutation endpoints (`POST /api/v1/control-center/generations/{id}/cancel/` and `POST /api/v1/control-center/steps/{id}/retry/`).
+### 2.8. Runtime Adapters (`runtime.adapters.openhands`)
+- Implemented robust error classification in `send_task`:
+  - `TimeoutError` $\rightarrow$ `ExecutionStatus.TIMEOUT` / `FailureCategory.TIMEOUT`
+  - `WebSocketConnectionError` / `httpx.ConnectError` $\rightarrow$ `ExecutionStatus.INFRASTRUCTURE_UNAVAILABLE` / `FailureCategory.NETWORK_CONNECTION`
+  - Model / Tool errors $\rightarrow$ `ExecutionStatus.AGENT_FAILED` with appropriate `FailureCategory.MODEL_ERROR` / `TOOL_ERROR`.
+
+### 2.9. Real MigrationExecutor Verification (`tests.migrations.test_b2_core_domain_migration`)
+- Real Django `MigrationExecutor` tests verify bidirectional migration safety on live PostgreSQL test database:
+  - Forward backfill of B1 records to B2 multi-tenant schema with slug collision handling and metadata preservation.
+  - Backward unapplication restoring legacy B1 fields and indexes.
+  - Verification that pre-existing unmarked personal organizations survive `organizations.0002` reversal.
 
 ---
 
-## 3. Automated Verification & Test Results
-
-The entire backend test suite was executed against the PostgreSQL and in-memory test databases:
+## 3. Test Suite Verification Summary
 
 ```
-platform win32 -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
-django: version: 5.1.15, settings: config.settings.test
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.1.1, pluggy-1.6.0
+django: version: 5.1.15, settings: config.settings.test (from ini)
 rootdir: C:\xampp\htdocs\tersostudio new\backend
-configfile: pyproject.toml
-plugins: anyio-4.14.2, libtmux-0.62.0, asyncio-1.4.0, django-4.14.0
+collected 235 items
 
-============================= 223 passed, 1 skipped in 47.33s =============================
+apps\accounts\tests\test_auth.py ............                            [  5%]
+apps\control_center\tests\test_control_center_actions_api.py ........... [  9%]
+..                                                                       [ 10%]
+apps\control_center\tests\test_control_center_api.py ................... [ 18%]
+...                                                                      [ 20%]
+apps\control_center\tests\test_control_center_detail_api.py ............ [ 25%]
+.                                                                        [ 25%]
+apps\control_center\tests\test_control_center_knowledge_and_projects_api.py . [ 25%]
+........                                                                 [ 29%]
+apps\conversations\tests\test_api.py ..                                  [ 30%]
+apps\conversations\tests\test_idempotency.py .                           [ 30%]
+apps\conversations\tests\test_messages.py ...                            [ 31%]
+apps\conversations\tests\test_models.py ..                               [ 32%]
+apps\conversations\tests\test_tenant_isolation.py ..                     [ 33%]
+apps\core\tests\test_health.py ......                                    [ 36%]
+apps\generations\tests\test_artifacts_and_workspace.py ....              [ 37%]
+apps\generations\tests\test_authorization.py .......                     [ 40%]
+apps\generations\tests\test_execution_service.py ..........              [ 45%]
+apps\generations\tests\test_generations.py .........                     [ 48%]
+apps\generations\tests\test_state_machine.py ........                    [ 52%]
+apps\organizations\tests\test_api.py ......                              [ 54%]
+apps\organizations\tests\test_context.py .......                         [ 57%]
+apps\organizations\tests\test_models_and_services.py .......             [ 60%]
+apps\organizations\tests\test_tenant_isolation.py ....                   [ 62%]
+apps\products\tests\test_api.py ....                                     [ 64%]
+apps\products\tests\test_models.py ...                                   [ 65%]
+apps\products\tests\test_plugin_boundary.py ..                           [ 66%]
+apps\projects\tests\test_project_compatibility.py .                      [ 66%]
+apps\projects\tests\test_project_sites.py ...                            [ 68%]
+apps\projects\tests\test_projects.py ........                            [ 71%]
+apps\realtime\tests\test_realtime.py .                                   [ 71%]
+apps\sites\tests\test_api.py ..                                          [ 72%]
+apps\sites\tests\test_models.py ..                                       [ 73%]
+apps\sites\tests\test_profiles.py ..                                     [ 74%]
+apps\sites\tests\test_secret_rejection.py ..                             [ 75%]
+apps\sites\tests\test_tenant_isolation.py ..                             [ 76%]
+tests\test_system_integration.py .                                       [ 76%]
+tests\migrations\test_b2_core_domain_migration.py ..                     [ 77%]
+apps\core\tests\test_health.py .                                         [ 77%]
+apps\core\tests\test_validators.py .............                         [ 83%]
+apps\realtime\tests\test_realtime.py ..                                  [ 84%]
+knowledge_base\tests\test_knowledge_engine.py .............              [ 89%]
+runtime\tests\test_mock_adapter.py ...                                   [ 91%]
+runtime\tests\test_openhands_adapter.py ...............                  [ 97%]
+runtime\tests\test_runtime_contracts.py .....                            [ 99%]
+tests\integration\test_openhands_live.py s                               [100%]
+
+======================= 234 passed, 1 skipped in 45.69s =======================
 ```
 
-### Breakdown by Domain Test Suite:
-1. `apps/accounts/tests/`: 11 passed
-2. `apps/core/tests/`: 14 passed
-3. `apps/organizations/tests/`: 24 passed
-4. `apps/products/tests/`: 6 passed
-5. `apps/sites/tests/`: 10 passed
-6. `apps/projects/tests/`: 12 passed
-7. `apps/conversations/tests/`: 10 passed
-8. `apps/generations/tests/`: 27 passed
-9. `apps/control_center/tests/`: 57 passed
-10. `apps/realtime/tests/`: 2 passed
-11. `knowledge_base/tests/`: 13 passed
-12. `runtime/tests/`: 31 passed
-13. `tests/migrations/`: 6 passed
-
 ---
 
-## 4. Migration & Schema Verification
+## 4. Conclusion & Hand-off
 
-Django migration consistency was verified via automated checks:
-
-1. `python manage.py check`:
-   ```
-   System check identified no issues (0 silenced).
-   ```
-
-2. `python manage.py makemigrations --check --dry-run`:
-   ```
-   No changes detected
-   ```
-
-3. Applied migrations:
-   - `organizations.0001_initial`
-   - `organizations.0002_backfill_personal_organizations`
-   - `products.0001_initial`
-   - `sites.0001_initial`
-   - `projects.0002_organization_product_ownership`
-   - `conversations.0001_initial`
-   - `generations.0002_organization_audit_ownership`
-
----
-
-## 5. Artifacts and Documentation Updated
-
-1. [API-CONTRACT.md](file:///c:/xampp/htdocs/tersostudio%20new/docs/API-CONTRACT.md) — Fully documented B2 endpoints for Organizations, Products, Sites, Projects, Conversations, and Generations.
-2. [DATA-MODEL.md](file:///c:/xampp/htdocs/tersostudio%20new/docs/DATA-MODEL.md) — Comprehensive entity relationship model and database table specifications.
-3. [B2-CORE-DOMAINS-REPORT.md](file:///c:/xampp/htdocs/tersostudio%20new/docs/reports/B2-CORE-DOMAINS-REPORT.md) — Final verifiable milestone report.
-4. [test_b2_core_domain_migration.py](file:///c:/xampp/htdocs/tersostudio%20new/backend/tests/migrations/test_b2_core_domain_migration.py) — End-to-end integration migration test suite.
-
----
-
-## 6. GitHub Actions CI Run Evidence
-
-- **Workflow Name**: `Backend Baseline CI`
-- **Run ID**: `32031817345`
-- **Run URL**: `https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32031817345`
-- **Head Branch**: `feature/b2-core-domains`
-- **Head SHA**: `6fa8d46f78617d620d5bdbcb2851aeef43bee7e6`
-- **Status / Conclusion**: `completed / success`
-- **Step Breakdown**:
-  - `Checkout Repository`: Completed / Success
-  - `Install uv (v0.8.13)`: Completed / Success
-  - `Setup Python (3.12)`: Completed / Success
-  - `Install Locked Dependencies (Frozen + Dev)`: Completed / Success
-  - `Verify OpenHands Packages (v1.42.1)`: Completed / Success
-  - `Run Django System Check`: Completed / Success
-  - `Run Migration Consistency Check`: Completed / Success
-  - `Run Backend Test Suite`: Completed / Success (223 passed, 1 skipped)
-  - `Validate Docker Compose Configuration`: Completed / Success
-  - `Build Docker Container Image`: Completed / Success
+Milestone B2 is fully completed, verified against contracts, tested with real database migrations, and confirmed passing on GitHub Actions CI. The codebase is prepared for Milestone B3 (Multi-Agent Roster & OpenHands Execution Engine).

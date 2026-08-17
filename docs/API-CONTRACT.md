@@ -64,30 +64,27 @@ Accept: application/json
 
 ## 3. Products API (`/api/v1/products/`)
 
+> **Governed Product Lifecycle**: WordPress products are provisioned automatically through the Project service. Direct creation (`POST /api/v1/products/`), root deletion (`DELETE /api/v1/products/{id}/`), and full replacement (`PUT /api/v1/products/{id}/`) are disallowed and return `405 Method Not Allowed`.
+
 ### 3.1. List Products
 - **Endpoint**: `GET /api/v1/products/`
 - **Query Parameters**: `kind`, `is_archived`, `search`
 - **Response**: `200 OK`
 
-### 3.2. Create WordPress Plugin Product
-- **Endpoint**: `POST /api/v1/products/`
+### 3.2. Retrieve Product Detail
+- **Endpoint**: `GET /api/v1/products/{id}/`
+- **Response**: `200 OK` (includes nested `plugin_target`)
+
+### 3.3. Update Product
+- **Endpoint**: `PATCH /api/v1/products/{id}/`
 - **Payload**:
   ```json
   {
-    "display_name": "LMS Course Engine",
-    "slug": "lms-course-engine",
-    "version": "1.0.0",
-    "wordpress_version": "6.7",
-    "php_version": "8.2",
-    "plugin_target": {
-      "plugin_slug": "lms-course-engine",
-      "text_domain": "lms-course-engine",
-      "namespace_prefix": "LMSCourseEngine",
-      "main_file": "lms-course-engine.php"
-    }
+    "display_name": "Updated Plugin Name",
+    "is_archived": false
   }
   ```
-- **Response**: `201 Created`
+- **Response**: `200 OK`
 
 ---
 
@@ -107,8 +104,10 @@ Accept: application/json
   ```
 - **Response**: `201 Created` (Secret keys in metadata are rejected with `400 Bad Request`)
 
-### 4.2. Record Site Profile Snapshot
-- **Endpoint**: `POST /api/v1/sites/{id}/snapshots/`
+### 4.2. Site Profile Snapshots (`/api/v1/sites/{site_id}/profiles/`)
+- **List Snapshots**: `GET /api/v1/sites/{site_id}/profiles/`
+- **Retrieve Snapshot**: `GET /api/v1/sites/{site_id}/profiles/{snapshot_id}/`
+- **Record Snapshot**: `POST /api/v1/sites/{site_id}/profiles/`
 - **Payload**:
   ```json
   {
@@ -136,6 +135,7 @@ Accept: application/json
   ```json
   {
     "name": "WordPress Stripe Connect",
+    "slug": "wp-stripe-connect",
     "description": "Marketplace split payment gateway.",
     "wordpress_version": "6.7",
     "php_version": "8.2",
@@ -144,11 +144,15 @@ Accept: application/json
   ```
 - **Response**: `201 Created` (automatically provisions underlying `WordPressProduct` and `PluginTarget`)
 
-### 5.2. Link Sites to Project (`/api/v1/projects/{id}/sites/`)
+### 5.2. Root Project Deletion Disallowed
+- Root `DELETE /api/v1/projects/{id}/` returns `405 Method Not Allowed`. Projects are archived via `/archive/`.
+
+### 5.3. Link Sites to Project (`/api/v1/projects/{id}/sites/`)
 - **List Attached Sites**: `GET /api/v1/projects/{id}/sites/`
 - **Attach Site**: `POST /api/v1/projects/{id}/sites/`
-  - Payload: `{"site_id": "<uuid>", "purpose": "STAGING"}`
-- **Detach Site**: `DELETE /api/v1/projects/{id}/sites/{site_id}/`
+  - Payload: `{"site_id": "<uuid>", "purpose": "PRIMARY"}`
+- **Retrieve Attached Site**: `GET /api/v1/projects/{id}/sites/{project_site_id}/`
+- **Detach Site**: `DELETE /api/v1/projects/{id}/sites/{project_site_id}/`
 
 ---
 
@@ -173,15 +177,19 @@ Accept: application/json
   ```json
   {
     "content": "Please design the referral cookie attribution handler.",
-    "client_message_id": "client-msg-uuid-001",
+    "client_message_id": "41699990-28b3-469b-8106-d7b1b369528d",
     "content_format": "MARKDOWN"
   }
   ```
 - **Response**:
-  - `201 Created` on first submission
-  - `200 OK` on duplicate `client_message_id` submission with identical message record
+  - `201 Created` with `idempotent_replay: false` on first submission
+  - `200 OK` with `idempotent_replay: true` on duplicate `client_message_id` submission
 
-### 6.3. Archive Conversation
+### 6.3. Retrieve Messages (Append-Only)
+- **Endpoint**: `GET /api/v1/conversations/{id}/messages/`
+- **Response**: `200 OK` (ordered by monotonic sequence number)
+
+### 6.4. Archive Conversation
 - **Endpoint**: `POST /api/v1/conversations/{id}/archive/`
 - **Response**: `200 OK` (locks conversation against further message insertion)
 
