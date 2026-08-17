@@ -3,11 +3,14 @@
 - **Project**: Tersuite AI Studio
 - **Milestone**: B2 — Core Identity, Product, Project, Site, and Conversation Domains
 - **Status**: COMPLETED & VERIFIED
-- **Baseline Git Commit**: `b651815cf380174f8df347a8d754a287f4e9a8bb`
+- **Baseline Git Commit (B2_BASE_SHA)**: `b651815cf380174f8df347a8d754a287f4e9a8bb`
+- **Published B2 Git Commit**: `6fa8d46f78617d620d5bdbcb2851aeef43bee7e6`
+- **Branch**: `feature/b2-core-domains`
+- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32031817345](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32031817345)
+- **CI Status & Conclusion**: Completed / Success (All 12 validation steps passed)
 - **Test Suite Status**: 223 Passed, 1 Skipped (Live LLM API test without credentials), 0 Failed
 - **Django System Check**: 0 Issues
 - **Migration Integrity Check**: Clean (`makemigrations --check --dry-run` reported No changes detected)
-
 
 ---
 
@@ -114,7 +117,7 @@ rootdir: C:\xampp\htdocs\tersostudio new\backend
 configfile: pyproject.toml
 plugins: anyio-4.14.2, libtmux-0.62.0, asyncio-1.4.0, django-4.14.0
 
-============================= 223 passed, 1 skipped in 58.38s =============================
+============================= 223 passed, 1 skipped in 47.33s =============================
 ```
 
 ### Breakdown by Domain Test Suite:
@@ -165,3 +168,25 @@ Django migration consistency was verified via automated checks:
 2. [DATA-MODEL.md](file:///c:/xampp/htdocs/tersostudio%20new/docs/DATA-MODEL.md) — Comprehensive entity relationship model and database table specifications.
 3. [B2-CORE-DOMAINS-REPORT.md](file:///c:/xampp/htdocs/tersostudio%20new/docs/reports/B2-CORE-DOMAINS-REPORT.md) — Final verifiable milestone report.
 4. [test_b2_core_domain_migration.py](file:///c:/xampp/htdocs/tersostudio%20new/backend/tests/migrations/test_b2_core_domain_migration.py) — End-to-end integration migration test suite.
+
+---
+
+## 6. GitHub Actions CI Run Evidence
+
+- **Workflow Name**: `Backend Baseline CI`
+- **Run ID**: `32031817345`
+- **Run URL**: `https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32031817345`
+- **Head Branch**: `feature/b2-core-domains`
+- **Head SHA**: `6fa8d46f78617d620d5bdbcb2851aeef43bee7e6`
+- **Status / Conclusion**: `completed / success`
+- **Step Breakdown**:
+  - `Checkout Repository`: Completed / Success
+  - `Install uv (v0.8.13)`: Completed / Success
+  - `Setup Python (3.12)`: Completed / Success
+  - `Install Locked Dependencies (Frozen + Dev)`: Completed / Success
+  - `Verify OpenHands Packages (v1.42.1)`: Completed / Success
+  - `Run Django System Check`: Completed / Success
+  - `Run Migration Consistency Check`: Completed / Success
+  - `Run Backend Test Suite`: Completed / Success (223 passed, 1 skipped)
+  - `Validate Docker Compose Configuration`: Completed / Success
+  - `Build Docker Container Image`: Completed / Success
