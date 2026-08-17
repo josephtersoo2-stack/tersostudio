@@ -62,7 +62,7 @@ class OfficialOpenHandsLiveSmokeTests(unittest.TestCase):
     """End-to-end integration test against the official OpenHands Agent Server."""
 
     def setUp(self):
-        self.server_url = os.getenv("OPENHANDS_SERVER_URL", "http://127.0.0.1:8010")
+        self.server_url = os.getenv("OPENHANDS_AGENT_SERVER_URL", "http://127.0.0.1:8010")
         
         # 1. Verify official OpenHands Agent Server is running
         if not is_official_openhands_server_available(self.server_url):
@@ -81,9 +81,10 @@ class OfficialOpenHandsLiveSmokeTests(unittest.TestCase):
 
         self.config = OpenHandsServerConfig(
             server_url=self.server_url,
-            api_key=self.api_key,
-            timeout_seconds=120,
-            default_model=self.model,
+            server_api_key=os.getenv("OPENHANDS_AGENT_SERVER_API_KEY") or None,
+            server_timeout_seconds=120,
+            llm_api_key=self.api_key,
+            llm_default_model=self.model,
         )
         self.runtime = OpenHandsAgentRuntime(self.config)
 

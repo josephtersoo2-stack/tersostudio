@@ -32,6 +32,8 @@ class HealthReadyView(APIView):
     """Readiness probe: inspects Database, Redis, and Celery broker connectivity.
 
     Reports readiness without synchronously executing a blocking Celery task.
+    Returns HTTP 200 if all required services are healthy, HTTP 503 otherwise.
+    Never exposes raw exception strings, URLs, passwords, or secrets in responses.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -53,10 +55,10 @@ class HealthReadyView(APIView):
                 "latency_ms": round(db_duration, 2),
             }
         except Exception as exc:
-            logger.error(f"Health check Database failure: {exc}")
+            logger.error("Health check Database failure: %s", exc.__class__.__name__)
             services["database"] = {
                 "status": "unhealthy",
-                "error": str(exc),
+                "code": "database_unavailable",
             }
             all_healthy = False
 
@@ -77,19 +79,12 @@ class HealthReadyView(APIView):
                 "latency_ms": round(redis_duration, 2),
             }
         except Exception as exc:
-            logger.warning(f"Health check Redis failure: {exc}")
-            # If in local development or test mode with in-memory channel layer, mark as simulated
-            if getattr(settings, "TESTING", False) or getattr(settings, "DEBUG", False):
-                services["redis"] = {
-                    "status": "simulated",
-                    "note": "Running in offline/test mode",
-                }
-            else:
-                services["redis"] = {
-                    "status": "unhealthy",
-                    "error": str(exc),
-                }
-                all_healthy = False
+            logger.warning("Health check Redis failure: %s", exc.__class__.__name__)
+            services["redis"] = {
+                "status": "unhealthy",
+                "code": "redis_unavailable",
+            }
+            all_healthy = False
 
         # 3. Celery Broker Connectivity Check (Non-blocking)
         try:
@@ -103,18 +98,12 @@ class HealthReadyView(APIView):
                 "broker": broker_transport,
             }
         except Exception as exc:
-            logger.warning(f"Health check Celery broker check: {exc}")
-            if getattr(settings, "TESTING", False) or getattr(settings, "DEBUG", False):
-                services["celery"] = {
-                    "status": "simulated",
-                    "note": "Running in offline/test mode",
-                }
-            else:
-                services["celery"] = {
-                    "status": "unhealthy",
-                    "error": str(exc),
-                }
-                all_healthy = False
+            logger.warning("Health check Celery broker failure: %s", exc.__class__.__name__)
+            services["celery"] = {
+                "status": "unhealthy",
+                "code": "celery_broker_unavailable",
+            }
+            all_healthy = False
 
         response_status = status.HTTP_200_OK if all_healthy else status.HTTP_503_SERVICE_UNAVAILABLE
 

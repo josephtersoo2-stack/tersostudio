@@ -92,8 +92,8 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
             "Accept": "application/json",
             "User-Agent": "Tersuite-AgentRuntime/1.0 (OpenHands-SDK/1.42.1)",
         }
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
+        if self.config.server_api_key:
+            headers["Authorization"] = f"Bearer {self.config.server_api_key}"
         return headers
 
     def create_session(self, config: SessionConfig) -> AgentSession:
@@ -135,13 +135,13 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 )
 
         try:
-            model_name = config.model or self.config.default_model
-            base_url = self.config.base_url
+            model_name = config.model or self.config.llm_default_model
+            base_url = self.config.llm_base_url
 
             api_key_str = ""
             if model_name.startswith("openrouter/") or os.getenv("OPENROUTER_API_KEY"):
                 if model_name.startswith("openrouter/"):
-                    api_key_str = os.getenv("OPENROUTER_API_KEY") or self.config.api_key or ""
+                    api_key_str = self.config.llm_api_key or os.getenv("OPENROUTER_API_KEY") or ""
                     base_url = base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
                 elif os.getenv("OPENROUTER_API_KEY") and not any([
                     os.getenv("ANTHROPIC_API_KEY") and model_name.startswith("anthropic/"),
@@ -156,7 +156,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
 
             if not api_key_str:
                 api_key_str = (
-                    self.config.api_key
+                    self.config.llm_api_key
                     or os.getenv("OPENROUTER_API_KEY")
                     or os.getenv("ANTHROPIC_API_KEY")
                     or os.getenv("OPENAI_API_KEY")
@@ -179,7 +179,7 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
             )
             workspace = OpenHandsRemoteWorkspace(
                 host=self.config.server_url,
-                api_key=self.config.api_key or None,
+                api_key=self.config.server_api_key or None,
                 working_dir=".",
             )
 

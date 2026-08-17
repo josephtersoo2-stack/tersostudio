@@ -24,8 +24,8 @@ class OpenHandsAdapterTests(unittest.TestCase):
     def setUp(self):
         self.config = OpenHandsServerConfig(
             server_url="http://mock-openhands-server:8010",
-            api_key="test-api-key-xyz",
-            timeout_seconds=30,
+            server_api_key="test-api-key-xyz",
+            server_timeout_seconds=30,
         )
         self.runtime = OpenHandsAgentRuntime(self.config)
         self.session_config = SessionConfig(
@@ -34,6 +34,51 @@ class OpenHandsAdapterTests(unittest.TestCase):
             model="anthropic/claude-sonnet-4-5-20250929",
             system_prompt="You are a WordPress engineering assistant.",
         )
+
+    def test_config_secret_masking(self):
+        """Verify OpenHandsServerConfig repr masks server_api_key and llm_api_key."""
+        config = OpenHandsServerConfig(
+            server_url="http://localhost:8010",
+            server_api_key="secret-server-key-123",
+            llm_api_key="sk-or-v1-secret-llm-key-456",
+        )
+        config_repr = repr(config)
+        self.assertNotIn("secret-server-key-123", config_repr)
+        self.assertNotIn("sk-or-v1-secret-llm-key-456", config_repr)
+        self.assertIn("server_api_key='***'", config_repr)
+        self.assertIn("llm_api_key='***'", config_repr)
+
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsAgent")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsLLM")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsRemoteWorkspace")
+    def test_credential_boundary_isolation(self, mock_ws_cls, mock_llm_cls, mock_agent_cls, mock_conv_cls):
+        """Verify Agent Server API keys are never supplied to LLM, and LLM keys are never supplied to Workspace."""
+        custom_config = OpenHandsServerConfig(
+            server_url="http://mock-server:8010",
+            server_api_key="server-only-token-abc",
+            llm_api_key="llm-only-token-xyz",
+            llm_default_model="openrouter/anthropic/claude-3.5-sonnet",
+        )
+        runtime = OpenHandsAgentRuntime(custom_config)
+        session_cfg = SessionConfig(
+            generation_id="gen-boundary-01",
+            agent_run_id="run-boundary-01",
+            model="openrouter/anthropic/claude-3.5-sonnet",
+        )
+        runtime.create_session(session_cfg)
+
+        # 1. OpenHandsLLM receives ONLY llm_api_key
+        mock_llm_cls.assert_called_once()
+        llm_kwargs = mock_llm_cls.call_args[1]
+        self.assertEqual(llm_kwargs["api_key"].get_secret_value(), "llm-only-token-xyz")
+        self.assertNotEqual(llm_kwargs["api_key"].get_secret_value(), "server-only-token-abc")
+
+        # 2. OpenHandsRemoteWorkspace receives ONLY server_api_key
+        mock_ws_cls.assert_called_once()
+        ws_kwargs = mock_ws_cls.call_args[1]
+        self.assertEqual(ws_kwargs["api_key"], "server-only-token-abc")
+        self.assertNotEqual(ws_kwargs["api_key"], "llm-only-token-xyz")
 
     def test_headers_include_auth_token_and_sdk_version(self):
         """Verify headers contain authorization bearer, user agent, and content type."""

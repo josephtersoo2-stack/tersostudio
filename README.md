@@ -5,9 +5,9 @@
 **Enterprise Autonomous Multi-Agent Engineering Platform for WordPress**
 
 [![Status](https://img.shields.io/badge/status-active%20development-blue.svg)](#)
-[![Python](https://img.shields.io/badge/python-3.11+-brightgreen.svg)](#)
-[![Django](https://img.shields.io/badge/django-5.0+-green.svg)](#)
-[![OpenHands](https://img.shields.io/badge/engine-OpenHands%20SDK-orange.svg)](#)
+[![Python](https://img.shields.io/badge/python-3.12-brightgreen.svg)](#)
+[![Django](https://img.shields.io/badge/django-5.1+-green.svg)](#)
+[![OpenHands](https://img.shields.io/badge/engine-OpenHands%20SDK%201.42.1-orange.svg)](#)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](#)
 
 </div>
@@ -101,12 +101,52 @@
 
 | Layer | Technologies |
 |---|---|
-| **Backend Core** | Python 3.11+, Django 5.x, Django REST Framework |
+| **Backend Core** | Python 3.12, Django 5.1+, Django REST Framework, uv |
 | **Real-time & Tasks** | Django Channels (WebSockets), Celery, Redis |
-| **Database** | PostgreSQL |
-| **Agent Execution** | OpenHands SDK, OpenHands Agent Server |
+| **Database** | PostgreSQL 16 |
+| **Agent Execution** | OpenHands SDK 1.42.1, OpenHands Agent Server 1.42.1 |
 | **Sandboxing & QA** | Docker, WordPress Core, PHP 8.x, MySQL/MariaDB, WP-CLI |
-| **Client Interface** | WordPress Administrative Plugin (PHP / React) |
+| **Client Interface** | WordPress Administrative Plugin & React Control Center |
+
+---
+
+## 🚀 Backend Setup & Verification (Milestone B1)
+
+### 1. Prerequisites
+- Python 3.12
+- `uv` (v0.8.13+)
+- PostgreSQL 16 & Redis 7
+
+### 2. Quickstart with uv
+```bash
+# Navigate to backend directory
+cd backend
+
+# Install locked dependencies (production + dev group)
+uv sync --frozen --extra dev
+
+# Run Django system checks and migrations
+uv run python manage.py check
+uv run python manage.py migrate
+
+# Run backend test suite
+uv run pytest
+```
+
+### 3. Quickstart with Docker Compose
+```bash
+cd backend
+docker compose up -d
+```
+
+### 4. Health & Readiness Probes
+- **Liveness probe**: `GET /api/v1/health/live/` (HTTP 200 without querying external services)
+- **Readiness probe**: `GET /api/v1/health/ready/` (checks PostgreSQL, Redis, and Celery broker; returns HTTP 200 if all healthy, HTTP 503 if any service is down)
+
+### 5. OpenHands & Model Provider Credentials
+Tersuite strictly isolates execution infrastructure from LLM model providers:
+- **Agent Server**: Configured via `OPENHANDS_AGENT_SERVER_URL` and `OPENHANDS_AGENT_SERVER_API_KEY` (used solely for workspace and container interaction).
+- **Model Providers**: Direct provider credentials (such as `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) are passed exclusively to LiteLLM model instances and never exposed to the Agent Server or frontend.
 
 ---
 

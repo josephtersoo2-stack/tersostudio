@@ -103,7 +103,7 @@ def main():
     if not model_slug.startswith("openrouter/"):
         model_slug = f"openrouter/{model_slug}"
 
-    server_url = getattr(settings, "OPENHANDS_SERVER_URL", "http://localhost:8010")
+    server_url = getattr(settings, "OPENHANDS_AGENT_SERVER_URL", "http://localhost:8010")
 
     print("==================================================")
     print("TERSUITE AI STUDIO — REAL CELERY PIPELINE TEST")

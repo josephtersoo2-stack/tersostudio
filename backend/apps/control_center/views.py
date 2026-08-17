@@ -126,8 +126,8 @@ class ControlCenterSummaryView(APIView):
 
         # 6. Runtime Metrics (Zero Credential Exposure)
         openrouter_key = getattr(settings, "OPENROUTER_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
-        openhands_key = getattr(settings, "OPENHANDS_API_KEY", "") or os.getenv("OPENHANDS_API_KEY", "")
-        openhands_url = getattr(settings, "OPENHANDS_SERVER_URL", "http://localhost:8010")
+        openhands_key = getattr(settings, "OPENHANDS_AGENT_SERVER_API_KEY", "") or os.getenv("OPENHANDS_AGENT_SERVER_API_KEY", "")
+        openhands_url = getattr(settings, "OPENHANDS_AGENT_SERVER_URL", "http://localhost:8010")
 
         runtime_summary = {
             "default_backend": getattr(settings, "AGENT_RUNTIME_BACKEND", "mock"),
@@ -394,7 +394,7 @@ class ControlCenterHealthView(APIView):
                 all_healthy = False
 
         # 4. OpenHands Server Connectivity Check
-        openhands_url = getattr(settings, "OPENHANDS_SERVER_URL", "http://localhost:8010")
+        openhands_url = getattr(settings, "OPENHANDS_AGENT_SERVER_URL", "http://localhost:8010")
         oh_start = time.time()
         try:
             import httpx
@@ -427,7 +427,7 @@ class ControlCenterHealthView(APIView):
 
         # 5. Runtime Posture
         openrouter_key = getattr(settings, "OPENROUTER_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
-        openhands_key = getattr(settings, "OPENHANDS_API_KEY", "") or os.getenv("OPENHANDS_API_KEY", "")
+        openhands_key = getattr(settings, "OPENHANDS_AGENT_SERVER_API_KEY", "") or os.getenv("OPENHANDS_AGENT_SERVER_API_KEY", "")
 
         runtime_info = {
             "backend": getattr(settings, "AGENT_RUNTIME_BACKEND", "mock"),
