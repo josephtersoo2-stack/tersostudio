@@ -2,12 +2,40 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Load environment variables from .env file
 load_dotenv(BASE_DIR / ".env")
+
+
+def _parse_positive_int(var_name: str, default: int) -> int:
+    raw = os.getenv(var_name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        val = int(raw)
+        if val <= 0:
+            raise ValueError()
+        return val
+    except (ValueError, TypeError):
+        raise ValueError(f"Configuration error: {var_name} must be a positive integer.")
+
+
+def _parse_bool(var_name: str, default: bool) -> bool:
+    raw = os.getenv(var_name)
+    if raw is None or raw.strip() == "":
+        return default
+    val = raw.strip().lower()
+    if val in ("true", "1", "yes", "on"):
+        return True
+    elif val in ("false", "0", "no", "off"):
+        return False
+    else:
+        raise ValueError(f"Configuration error: {var_name} must be a valid boolean.")
+
 
 # Security
 SECRET_KEY = os.getenv(
@@ -84,35 +112,19 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# Database Configuration (PostgreSQL by default)
+# Database Configuration (PostgreSQL by default via DATABASE_URL)
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://tersuite:tersuite_pass@localhost:5432/tersuite_db",
 )
 
 DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("DB_NAME", "tersuite_db"),
-        "USER": os.getenv("DB_USER", "tersuite"),
-        "PASSWORD": os.getenv("DB_PASSWORD", "tersuite_pass"),
-        "HOST": os.getenv("DB_HOST", "localhost"),
-        "PORT": os.getenv("DB_PORT", "5432"),
-        "CONN_MAX_AGE": 60,
-    }
+    "default": dj_database_url.parse(
+        DATABASE_URL,
+        conn_max_age=60,
+        engine="django.db.backends.postgresql",
+    )
 }
-
-# Parse full DATABASE_URL if provided
-if DATABASE_URL and DATABASE_URL.startswith("postgresql://"):
-    try:
-        import dj_database_url
-        DATABASES["default"] = dj_database_url.parse(
-            DATABASE_URL,
-            conn_max_age=60,
-            engine="django.db.backends.postgresql",
-        )
-    except ImportError:
-        pass
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
@@ -131,7 +143,7 @@ USE_TZ = True
 # Static and Media Files
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-MEDIA_URL = "media/"
+MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -160,7 +172,7 @@ CORS_ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:3000,http://127.0.0.1:3000",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173",
     ).split(",")
     if origin.strip()
 ]
@@ -188,11 +200,14 @@ CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
 
 # OpenHands Runtime Configuration (Decoupled Adapter settings)
-OPENHANDS_SERVER_URL = os.getenv("OPENHANDS_SERVER_URL", "http://localhost:8010")
-OPENHANDS_API_KEY = os.getenv("OPENHANDS_API_KEY", "")
-OPENHANDS_TIMEOUT_SECONDS = int(os.getenv("OPENHANDS_TIMEOUT_SECONDS", "120"))
-OPENHANDS_DEFAULT_MODEL = os.getenv(
-    "OPENHANDS_DEFAULT_MODEL",
+OPENHANDS_AGENT_SERVER_URL = os.getenv("OPENHANDS_AGENT_SERVER_URL", "http://localhost:8010")
+OPENHANDS_AGENT_SERVER_API_KEY = os.getenv("OPENHANDS_AGENT_SERVER_API_KEY", "")
+OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS = _parse_positive_int("OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS", 120)
+OPENHANDS_AGENT_SERVER_VERIFY_SSL = _parse_bool("OPENHANDS_AGENT_SERVER_VERIFY_SSL", True)
+
+# LLM Provider Configuration
+LLM_DEFAULT_MODEL = os.getenv(
+    "LLM_DEFAULT_MODEL",
     "anthropic/claude-sonnet-4-5-20250929",
 )
 AGENT_RUNTIME_BACKEND = os.getenv("AGENT_RUNTIME_BACKEND", "mock")
@@ -240,8 +255,3 @@ LOGGING = {
         },
     },
 }
-
-# Media and Durable Artifact Storage
-MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
-

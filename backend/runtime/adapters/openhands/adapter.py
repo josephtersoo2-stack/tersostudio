@@ -8,11 +8,11 @@ as its sole execution path:
   - Events & Stats: Direct extraction and normalization from OpenHands state
   - Strict Failure Classification: Rich error categorization without homemade fallback retries
 """
-import asyncio
 import logging
 import os
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+
 import httpx
 from pydantic import SecretStr
 
@@ -21,7 +21,6 @@ from runtime.exceptions import (
     AdapterConnectionError,
     SessionNotFoundError,
     TaskExecutionError,
-    TimeoutExecutionError,
 )
 from runtime.interfaces.runtime import TersuiteAgentRuntime
 from runtime.interfaces.session import (
@@ -32,6 +31,7 @@ from runtime.interfaces.session import (
     SessionStatus,
     TaskResult,
 )
+
 from .config import OpenHandsServerConfig
 from .session import OpenHandsAgentSession
 
@@ -47,17 +47,9 @@ try:
     )
     from openhands.sdk.conversation.impl.remote_conversation import (
         RemoteConversation,
-        RemoteEventsList,
     )
     from openhands.sdk.conversation.state import ConversationExecutionStatus
-    from openhands.sdk.event import (
-        ActionEvent,
-        AgentErrorEvent,
-        Event as OpenHandsEvent,
-        InterruptEvent,
-        MessageEvent,
-        ObservationEvent,
-    )
+    from openhands.sdk.event import Event as OpenHandsEvent
     from openhands.sdk.llm import LLM as OpenHandsLLM
     from openhands.sdk.workspace import RemoteWorkspace as OpenHandsRemoteWorkspace
 
@@ -75,6 +67,47 @@ except ImportError:
     WebSocketConnectionError = Exception
 
 
+def _resolve_llm_credentials(
+    model_name: str,
+    configured_key: Optional[SecretStr],
+    configured_base_url: Optional[str],
+) -> Tuple[Optional[SecretStr], Optional[str]]:
+    """Select only the credential matching the model prefix.
+
+    openrouter/ -> OPENROUTER_API_KEY and OPENROUTER_BASE_URL
+    anthropic/  -> ANTHROPIC_API_KEY
+    openai/     -> OPENAI_API_KEY
+    gemini/     -> GEMINI_API_KEY
+    groq/       -> GROQ_API_KEY
+
+    For an unknown provider prefix, pass no explicit provider key and do not borrow another provider's key.
+    Never use the Agent Server key.
+    """
+    if model_name.startswith("openrouter/"):
+        env_val = os.getenv("OPENROUTER_API_KEY")
+        key = configured_key if configured_key is not None else (SecretStr(env_val) if env_val else None)
+        base_url = configured_base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        return key, base_url
+    elif model_name.startswith("anthropic/"):
+        env_val = os.getenv("ANTHROPIC_API_KEY")
+        key = configured_key if configured_key is not None else (SecretStr(env_val) if env_val else None)
+        return key, configured_base_url
+    elif model_name.startswith("openai/"):
+        env_val = os.getenv("OPENAI_API_KEY")
+        key = configured_key if configured_key is not None else (SecretStr(env_val) if env_val else None)
+        return key, configured_base_url
+    elif model_name.startswith("gemini/"):
+        env_val = os.getenv("GEMINI_API_KEY")
+        key = configured_key if configured_key is not None else (SecretStr(env_val) if env_val else None)
+        return key, configured_base_url
+    elif model_name.startswith("groq/"):
+        env_val = os.getenv("GROQ_API_KEY")
+        key = configured_key if configured_key is not None else (SecretStr(env_val) if env_val else None)
+        return key, configured_base_url
+    else:
+        return None, configured_base_url
+
+
 class OpenHandsAgentRuntime(TersuiteAgentRuntime):
     """Production adapter bridging Tersuite to OpenHands Software Agent SDK v1.42.1.
 
@@ -85,16 +118,6 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
         self.config = config or OpenHandsServerConfig()
         self._sessions: Dict[str, OpenHandsAgentSession] = {}
         self._results: Dict[str, TaskResult] = {}
-
-    def _get_headers(self) -> Dict[str, str]:
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "Tersuite-AgentRuntime/1.0 (OpenHands-SDK/1.42.1)",
-        }
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        return headers
 
     def create_session(self, config: SessionConfig) -> AgentSession:
         """Instantiate a new conversation session using official OpenHands SDK RemoteConversation.
@@ -135,39 +158,16 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 )
 
         try:
-            model_name = config.model or self.config.default_model
-            base_url = self.config.base_url
-
-            api_key_str = ""
-            if model_name.startswith("openrouter/") or os.getenv("OPENROUTER_API_KEY"):
-                if model_name.startswith("openrouter/"):
-                    api_key_str = os.getenv("OPENROUTER_API_KEY") or self.config.api_key or ""
-                    base_url = base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-                elif os.getenv("OPENROUTER_API_KEY") and not any([
-                    os.getenv("ANTHROPIC_API_KEY") and model_name.startswith("anthropic/"),
-                    os.getenv("OPENAI_API_KEY") and model_name.startswith("openai/"),
-                    os.getenv("GEMINI_API_KEY") and model_name.startswith("gemini/"),
-                    os.getenv("GROQ_API_KEY") and model_name.startswith("groq/"),
-                ]):
-                    api_key_str = os.getenv("OPENROUTER_API_KEY", "")
-                    base_url = base_url or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-                    if not model_name.startswith("openrouter/"):
-                        model_name = f"openrouter/{model_name}"
-
-            if not api_key_str:
-                api_key_str = (
-                    self.config.api_key
-                    or os.getenv("OPENROUTER_API_KEY")
-                    or os.getenv("ANTHROPIC_API_KEY")
-                    or os.getenv("OPENAI_API_KEY")
-                    or os.getenv("GEMINI_API_KEY")
-                    or os.getenv("GROQ_API_KEY")
-                    or ""
-                )
+            model_name = config.model or self.config.llm_default_model
+            llm_key, base_url = _resolve_llm_credentials(
+                model_name=model_name,
+                configured_key=self.config.llm_api_key,
+                configured_base_url=self.config.llm_base_url,
+            )
 
             llm_kwargs: Dict[str, Any] = {
                 "model": model_name,
-                "api_key": SecretStr(api_key_str) if api_key_str else None,
+                "api_key": llm_key,
             }
             if base_url:
                 llm_kwargs["base_url"] = base_url
@@ -177,10 +177,16 @@ class OpenHandsAgentRuntime(TersuiteAgentRuntime):
                 llm=llm,
                 system_prompt=config.system_prompt,
             )
+            server_key_unwrapped = (
+                self.config.server_api_key.get_secret_value()
+                if self.config.server_api_key
+                else None
+            )
             workspace = OpenHandsRemoteWorkspace(
                 host=self.config.server_url,
-                api_key=self.config.api_key or None,
+                api_key=server_key_unwrapped,
                 working_dir=".",
+                read_timeout=self.config.server_timeout_seconds,
             )
 
             conversation_obj = OpenHandsConversation(

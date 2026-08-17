@@ -32,10 +32,11 @@ def _build_runtime():
         from runtime.adapters.openhands import OpenHandsAgentRuntime, OpenHandsServerConfig
 
         config = OpenHandsServerConfig(
-            server_url=settings.OPENHANDS_SERVER_URL,
-            api_key=settings.OPENHANDS_API_KEY or None,
-            default_model=settings.OPENHANDS_DEFAULT_MODEL,
-            timeout_seconds=settings.OPENHANDS_TIMEOUT_SECONDS,
+            server_url=getattr(settings, "OPENHANDS_AGENT_SERVER_URL", "http://localhost:8010"),
+            server_api_key=getattr(settings, "OPENHANDS_AGENT_SERVER_API_KEY", "") or None,
+            server_timeout_seconds=getattr(settings, "OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS", 120),
+            server_verify_ssl=getattr(settings, "OPENHANDS_AGENT_SERVER_VERIFY_SSL", True),
+            llm_default_model=getattr(settings, "LLM_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
         )
         return OpenHandsAgentRuntime(config=config)
 
@@ -71,7 +72,7 @@ class ExecutionService:
         model_name = (
             step.input_payload.get("model")
             or os.getenv("OPENROUTER_MODEL")
-            or settings.OPENHANDS_DEFAULT_MODEL
+            or getattr(settings, "LLM_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5-20250929")
         )
 
         agent_run = AgentRun.objects.create(
@@ -131,7 +132,7 @@ class ExecutionService:
             agent_run.model_name
             or step.input_payload.get("model")
             or os.getenv("OPENROUTER_MODEL")
-            or settings.OPENHANDS_DEFAULT_MODEL
+            or getattr(settings, "LLM_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5-20250929")
         )
 
         runtime = _build_runtime()

@@ -308,6 +308,7 @@ class TestControlCenterHealthEndpoint:
         assert "sk-or-v1" not in content_str
         assert "OPENROUTER_API_KEY" not in content_str
         assert "OPENHANDS_API_KEY" not in content_str
+        assert "OPENHANDS_AGENT_SERVER_API_KEY" not in content_str
         assert "postgres://" not in content_str
         assert "redis://" not in content_str
 

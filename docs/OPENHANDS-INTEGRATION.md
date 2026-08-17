@@ -4,7 +4,7 @@
 
 **Tersuite AI Studio** uses the official **OpenHands Software Agent SDK & Agent Server (v1.42.1)** as its execution engine for executing agent conversations, managing bash/python tools, and orchestrating sandboxed workspaces.
 
-Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/tersostudio%20new/AGENTS.md) and [docs/TERSUITE-IMPLEMENTATION-ROADMAP.md](file:///c:/xampp/htdocs/tersostudio%20new/docs/TERSUITE-IMPLEMENTATION-ROADMAP.md):
+Per the non-negotiable engineering rules in [AGENTS.md](../AGENTS.md) and [TERSUITE-IMPLEMENTATION-ROADMAP.md](TERSUITE-IMPLEMENTATION-ROADMAP.md):
 
 > **Core Decoupling Rule**: The Django business, generation, and intelligence layers must never import or depend directly on OpenHands internals. All agent interactions must go through the `TersuiteAgentRuntime` abstraction layer.
 
@@ -75,9 +75,10 @@ Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/
 
 ## 2. Pinned Ecosystem & Version Matrix
 
-| Component | Pinned Version | Role / Environment |
+| Component | Pinned Version / Line | Role / Environment |
 |---|---|---|
-| **Python** | `3.12.14` | CPython 3.12 64-bit runtime |
+| **Python** | `3.12` | Supported Python 3.12 minor line (e.g. 3.12.11 in Docker, 3.12.14 in local runtime) |
+| **uv** | `0.8.13` | Deterministic package manager & lock engine |
 | **openhands-sdk** | `1.42.1` | Pinned OpenHands Software Agent SDK |
 | **openhands-agent-server** | `1.42.1` | Official OpenHands Agent Server |
 | **openhands-tools** | `1.42.1` | Pinned OpenHands Tools |
@@ -88,19 +89,26 @@ Per the non-negotiable engineering rules in [AGENTS.md](file:///c:/xampp/htdocs/
 | **Daphne** | `4.2.3` | ASGI Server |
 | **Celery** | `5.6.3` | Asynchronous Background Task Worker |
 | **Redis** | `8.1.0` | Cache, Celery Broker, Channel Layer |
-| **psycopg** | `3.3.4` / `3.3.4-binary` | PostgreSQL 16 Native Driver |
-| **PostgreSQL** | `16.6` | Relational Database |
+| **psycopg** | `3.3.4` | PostgreSQL native driver (both psycopg and psycopg-binary resolve to 3.3.4) |
+| **PostgreSQL** | `16` | Relational database (PostgreSQL 16 major line via postgres:16-alpine) |
 
 ---
 
-## 3. Network Topology & Service Ports
+## 3. Strict Credential Separation & Configuration Settings
 
-| Service | Port | Target URL | Description |
-|---|---|---|---|
-| **Tersuite Django (Daphne)** | `8000` | `http://localhost:8000` | Django REST API & WebSockets |
-| **Official OpenHands Agent Server** | `8010` | `http://localhost:8010` | Official OpenHands Agent Server |
-| **PostgreSQL 16** | `5432` | `postgresql://tersuite:...@localhost:5432/tersuite_db` | Primary relational database |
-| **Redis 7** | `6379` | `redis://localhost:6379/0` | Cache & Channel layer |
+Tersuite strictly segregates Agent Server infrastructure credentials from LLM provider API credentials:
+
+| Configuration Setting | Type | Role & Boundary |
+|---|---|---|
+| `OPENHANDS_AGENT_SERVER_URL` | String | URL of the official OpenHands Agent Server (e.g. `http://localhost:8010`) |
+| `OPENHANDS_AGENT_SERVER_API_KEY` | SecretStr | Secret token for Agent Server workspace authentication. Unwrapped with `.get_secret_value()` solely for `OpenHandsRemoteWorkspace.api_key`. |
+| `OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS` | Integer | Read timeout for Agent Server calls. Passed to `RemoteWorkspace(..., read_timeout=...)`. |
+| `OPENHANDS_AGENT_SERVER_VERIFY_SSL` | Boolean | TLS verification flag. In B1, `server_verify_ssl=True` is mandatory; disabling it raises a configuration error. |
+| `LLM_DEFAULT_MODEL` | String | Default model identifier (e.g. `anthropic/claude-sonnet-4-5-20250929`). |
+| `OPENROUTER_API_KEY` | SecretStr | Direct provider API key for `openrouter/` models. Passed as `SecretStr` to `OpenHandsLLM.api_key`. |
+| `OPENROUTER_BASE_URL` | String | Provider routing URL for OpenRouter models. |
+
+> **Security Rule**: The Agent Server API key must **never** be supplied to `OpenHandsLLM`, and model provider API keys must **never** be supplied to `OpenHandsRemoteWorkspace` or Agent Server authorization headers. Agent Server credentials are unwrapped only for `OpenHandsRemoteWorkspace.api_key`, while provider credentials are provided as `SecretStr` directly to `OpenHandsLLM.api_key`.
 
 ---
 
@@ -110,12 +118,12 @@ The official OpenHands Agent Server is started with:
 
 ```powershell
 # In backend virtual environment
-.\.venv\Scripts\python.exe -m openhands.agent_server --host 127.0.0.1 --port 8010
+uv run python -m openhands.agent_server --host 127.0.0.1 --port 8010
 ```
 
 Verify health & OpenAPI metadata:
 ```powershell
-.\.venv\Scripts\python.exe -c "import httpx; resp = httpx.get('http://127.0.0.1:8010/openapi.json'); print(resp.json()['info'])"
+uv run python -c "import httpx; resp = httpx.get('http://127.0.0.1:8010/openapi.json'); print(resp.json()['info'])"
 # Expected output: {'title': 'OpenHands Agent Server', 'version': '1.42.1'}
 ```
 

@@ -1,0 +1,110 @@
+name: Backend Baseline CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+      - 'docs/**'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+      - 'docs/**'
+
+jobs:
+  backend-test-baseline:
+    name: Backend Test & Verification Baseline
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: tersuite_test_db
+          POSTGRES_USER: tersuite
+          POSTGRES_PASSWORD: testpassword123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tersuite -d tersuite_test_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install uv (v0.8.13)
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.13"
+          enable-cache: true
+
+      - name: Setup Python (3.12)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Locked Dependencies (Frozen + Dev)
+        run: uv sync --frozen --extra dev
+
+      - name: Verify OpenHands Packages (v1.42.1)
+        run: |
+          uv run python -c "import importlib.metadata as m; pkgs = ['openhands-sdk','openhands-tools','openhands-agent-server','openhands-workspace']; versions = {p: m.version(p) for p in pkgs}; print('Verified OpenHands packages:', versions); assert all(v == '1.42.1' for v in versions.values()), 'OpenHands packages version mismatch'"
+
+      - name: Run Django System Check
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+          DATABASE_URL: postgresql://tersuite:testpassword123@localhost:5432/tersuite_test_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          SECRET_KEY: ci-secret-key-do-not-use-in-production-12345
+        run: uv run python manage.py check
+
+      - name: Run Migration Consistency Check
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+          DATABASE_URL: postgresql://tersuite:testpassword123@localhost:5432/tersuite_test_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          SECRET_KEY: ci-secret-key-do-not-use-in-production-12345
+        run: uv run python manage.py makemigrations --check --dry-run
+
+      - name: Run Backend Test Suite
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.test
+          DATABASE_URL: postgresql://tersuite:testpassword123@localhost:5432/tersuite_test_db
+          REDIS_URL: redis://localhost:6379/0
+          CELERY_BROKER_URL: redis://localhost:6379/1
+          CELERY_RESULT_BACKEND: redis://localhost:6379/2
+          SECRET_KEY: ci-secret-key-do-not-use-in-production-12345
+        run: uv run pytest
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
+
+      - name: Build Docker Container Image
+        run: docker build -t tersuite-backend:b1 .
