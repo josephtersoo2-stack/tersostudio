@@ -164,7 +164,20 @@ class GenerationStateMachine:
             generation.paused_at = None
             update_fields.append("paused_at")
 
+        if target_status in (
+            GenerationStatus.BUILDING,
+            GenerationStatus.PLANNING,
+            GenerationStatus.TESTING,
+            GenerationStatus.REVIEW,
+            GenerationStatus.PACKAGING,
+        ) and current_status in (GenerationStatus.RETRYING, GenerationStatus.FAILED):
+            generation.failed_at = None
+            generation.failure_category = ""
+            generation.error_message = ""
+            update_fields.extend(["failed_at", "failure_category", "error_message"])
+
         generation.status = target_status
+
         generation.save(update_fields=update_fields)
 
         return generation

@@ -68,12 +68,15 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",
     "corsheaders",
     "channels",
-    # Foundational Tersuite Apps (Phase 1)
+    # Foundational & Core Domains (B1 / B2)
     "apps.core.apps.CoreConfig",
     "apps.accounts.apps.AccountsConfig",
     "apps.realtime.apps.RealtimeConfig",
-    # Domain Apps (Phase 2)
+    "apps.organizations.apps.OrganizationsConfig",
+    "apps.products.apps.ProductsConfig",
+    "apps.sites.apps.SitesConfig",
     "apps.projects.apps.ProjectsConfig",
+    "apps.conversations.apps.ConversationsConfig",
     "apps.generations.apps.GenerationsConfig",
     # Control Center (CC-01)
     "apps.control_center.apps.ControlCenterConfig",

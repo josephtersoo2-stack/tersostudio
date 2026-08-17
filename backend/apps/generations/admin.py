@@ -40,17 +40,19 @@ class GenerationAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "project",
-        "user",
+        "organization",
+        "created_by",
         "status",
         "current_step_number",
         "total_steps",
         "created_at",
     )
     list_filter = ("status", "created_at")
-    search_fields = ("id", "prompt", "project__name", "user__email", "error_message")
+    search_fields = ("id", "prompt", "project__name", "organization__name", "created_by__email", "error_message")
     readonly_fields = (
         "id",
-        "user",
+        "created_by",
+        "updated_by",
         "created_at",
         "updated_at",
         "completed_at",
@@ -59,6 +61,7 @@ class GenerationAdmin(admin.ModelAdmin):
         "paused_at",
     )
     inlines = [GenerationStepInline, ArtifactInline]
+
 
 
 @admin.register(GenerationStep)

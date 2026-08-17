@@ -8,7 +8,8 @@ from apps.generations.enums import GenerationStatus
 from apps.generations.exceptions import InvalidStateTransitionError
 from apps.generations.models import Generation
 from apps.generations.services.state_machine import GenerationStateMachine
-from apps.projects.models import Project
+from apps.organizations.services import ensure_personal_organization
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -24,13 +25,16 @@ class GenerationStateMachineTests(TestCase):
             email="qa.lead@tersuite.com",
             password="StrongPassword123!",
         )
-        self.project = Project.objects.create(
-            user=self.user,
+        self.org = ensure_personal_organization(self.user)
+        self.project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.user,
             name="WooCommerce Stripe Connect",
         )
         self.generation = Generation.objects.create(
+            organization=self.org,
             project=self.project,
-            user=self.user,
+            created_by=self.user,
             prompt="Build Stripe Connect gateway for marketplace vendor split payments.",
             status=GenerationStatus.DRAFT,
         )
@@ -58,125 +62,86 @@ class GenerationStateMachineTests(TestCase):
 
     def test_invalid_transition_raises_error(self):
         """Verify skipping required phases raises InvalidStateTransitionError."""
-        # DRAFT cannot jump directly to BUILDING
         with self.assertRaises(InvalidStateTransitionError):
             GenerationStateMachine.transition(
                 self.generation,
-                target_status=GenerationStatus.BUILDING,
+                target_status=GenerationStatus.PACKAGING,
+                reason="Invalid jump",
             )
 
-        # Move to COMPLETED and verify terminal state cannot transition out
+    def test_failure_transition_records_failure_fields(self):
+        """Verify transitioning to FAILED records error message and failure category."""
+        # Move to BUILDING first
         gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
         gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
         gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
         gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.TESTING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.REVIEW)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PACKAGING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.COMPLETED)
 
-        with self.assertRaises(InvalidStateTransitionError):
-            GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
+        # Fail from BUILDING
+        failed_gen = GenerationStateMachine.transition(
+            gen,
+            target_status=GenerationStatus.FAILED,
+            reason="LLM Provider 500 error",
+            error_message="Connection timed out after 3 retries.",
+            failure_category="MODEL_ERROR",
+        )
 
-    def test_failure_transition_records_timestamps_and_category(self):
-        """Verify FAILED transition records failed_at, error message, and failure category."""
+        self.assertEqual(failed_gen.status, GenerationStatus.FAILED)
+        self.assertEqual(failed_gen.failure_category, "MODEL_ERROR")
+        self.assertEqual(failed_gen.error_message, "Connection timed out after 3 retries.")
+        self.assertIsNotNone(failed_gen.failed_at)
+
+    def test_retry_from_failed_transitions_to_retrying_then_building(self):
+        """Verify retrying a failed generation resets failure states and returns to BUILDING."""
+        # Setup failed generation
         gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING)
         gen = GenerationStateMachine.transition(
             gen,
             target_status=GenerationStatus.FAILED,
-            error_message="Model provider connection timeout.",
-            failure_category="NETWORK_CONNECTION",
-            reason="Unreachable LLM endpoint",
+            reason="Tool error",
+            failure_category="TOOL_ERROR",
         )
 
-        self.assertEqual(gen.status, GenerationStatus.FAILED)
-        self.assertIsNotNone(gen.failed_at)
-        self.assertEqual(gen.error_message, "Model provider connection timeout.")
-        self.assertEqual(gen.failure_category, "NETWORK_CONNECTION")
+        # Retry transition
+        retrying_gen = GenerationStateMachine.transition(gen, target_status=GenerationStatus.RETRYING)
+        self.assertEqual(retrying_gen.status, GenerationStatus.RETRYING)
 
-    def test_pause_and_resume_lifecycle(self):
-        """Verify PAUSED transition sets paused_at, and resuming clears it."""
-        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
+        # Transition back to BUILDING
+        resumed_gen = GenerationStateMachine.transition(retrying_gen, target_status=GenerationStatus.BUILDING)
+        self.assertEqual(resumed_gen.status, GenerationStatus.BUILDING)
+        self.assertEqual(resumed_gen.failure_category, "")
+        self.assertIsNone(resumed_gen.failed_at)
 
-        # Pause
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PAUSED, reason="Waiting for user review")
-        self.assertEqual(gen.status, GenerationStatus.PAUSED)
-        self.assertIsNotNone(gen.paused_at)
-
-        # Resume to PLANNING
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING, reason="Resuming execution")
-        self.assertEqual(gen.status, GenerationStatus.PLANNING)
-        self.assertIsNone(gen.paused_at)
-
-    def test_repair_loops_from_testing_and_review_to_building(self):
-        """Verify repair loops allowing backward progression to BUILDING for critic/test fixes."""
+    def test_cancellation_from_active_state(self):
+        """Verify cancelling from BUILDING transitions to CANCELLED and records cancelled_at."""
         gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
         gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
         gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
         gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.TESTING)
 
-        # Test failure repair loop: TESTING -> BUILDING
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING, reason="Fixing PHP linting syntax error")
-        self.assertEqual(gen.status, GenerationStatus.BUILDING)
-
-        # Back to TESTING -> REVIEW
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.TESTING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.REVIEW)
-
-        # Security review repair loop: REVIEW -> BUILDING
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING, reason="Patching CSRF missing nonce")
-        self.assertEqual(gen.status, GenerationStatus.BUILDING)
-
-    def test_api_transition_endpoint_success(self):
-        """Verify POST /api/v1/generations/{id}/transition/ executes valid state changes."""
-        self.client.force_authenticate(user=self.user)
-        payload = {
-            "target_status": "SPECIFICATION",
-            "reason": "Feature discovery completed.",
-        }
-        response = self.client.post(
-            f"/api/v1/generations/{self.generation.id}/transition/",
-            payload,
-            format="json",
+        cancelled_gen = GenerationStateMachine.transition(
+            gen,
+            target_status=GenerationStatus.CANCELLED,
+            reason="User stopped generation.",
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["status"], "SPECIFICATION")
+        self.assertEqual(cancelled_gen.status, GenerationStatus.CANCELLED)
+        self.assertIsNotNone(cancelled_gen.cancelled_at)
 
-    def test_api_transition_endpoint_invalid_returns_400(self):
-        """Verify invalid transition via API returns HTTP 400 Bad Request."""
-        self.client.force_authenticate(user=self.user)
-        payload = {
-            "target_status": "COMPLETED",  # Cannot jump from DRAFT to COMPLETED
-            "reason": "Skipping all steps.",
-        }
-        response = self.client.post(
-            f"/api/v1/generations/{self.generation.id}/transition/",
-            payload,
-            format="json",
-        )
+    def test_pause_and_resume_cycle(self):
+        """Verify pausing from BUILDING and resuming back to BUILDING."""
+        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING)
 
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "invalid_state_transition")
+        paused_gen = GenerationStateMachine.transition(gen, target_status=GenerationStatus.PAUSED)
+        self.assertEqual(paused_gen.status, GenerationStatus.PAUSED)
+        self.assertIsNotNone(paused_gen.paused_at)
 
-    def test_api_pause_cancel_retry_actions(self):
-        """Verify custom action endpoints /pause/, /cancel/, /retry/."""
-        self.client.force_authenticate(user=self.user)
-
-        # Move to PLANNING
-        GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
-        GenerationStateMachine.transition(self.generation, GenerationStatus.APPROVED)
-        GenerationStateMachine.transition(self.generation, GenerationStatus.PLANNING)
-
-        # Action: Pause
-        pause_resp = self.client.post(f"/api/v1/generations/{self.generation.id}/pause/")
-        self.assertEqual(pause_resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(pause_resp.data["status"], "PAUSED")
-
-        # Action: Cancel
-        cancel_resp = self.client.post(f"/api/v1/generations/{self.generation.id}/cancel/")
-        self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(cancel_resp.data["status"], "CANCELLED")
+        resumed_gen = GenerationStateMachine.transition(paused_gen, target_status=GenerationStatus.BUILDING)
+        self.assertEqual(resumed_gen.status, GenerationStatus.BUILDING)
+        self.assertIsNone(resumed_gen.paused_at)

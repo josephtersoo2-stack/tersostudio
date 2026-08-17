@@ -18,7 +18,9 @@ from apps.generations.models import (
     Workspace,
 )
 from apps.generations.storage import get_artifact_storage
+from apps.organizations.services import ensure_personal_organization
 from apps.projects.models import Project
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -53,8 +55,10 @@ def normal_user(db):
 @pytest.fixture
 def sample_operational_tree(db, normal_user):
     """Seed a rich operational tree with generation, step, run, workspace, and stored artifact."""
-    project = Project.objects.create(
-        user=normal_user,
+    org = ensure_personal_organization(normal_user)
+    project = ProjectService.create_project(
+        organization=org,
+        actor=normal_user,
         name="WooCommerce Enterprise Gateway",
         description="Payment gateway integration",
     )
@@ -63,8 +67,9 @@ def sample_operational_tree(db, normal_user):
         "refund workflows, and admin configuration tabs."
     )
     generation = Generation.objects.create(
+        organization=org,
         project=project,
-        user=normal_user,
+        created_by=normal_user,
         prompt=full_prompt,
         status=GenerationStatus.BUILDING,
         current_step_number=1,

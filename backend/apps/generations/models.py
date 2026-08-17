@@ -1,7 +1,7 @@
 """Data models for Generations, Generation Steps, Agent Runs, Workspaces, and Artifacts."""
 from django.conf import settings
 from django.db import models
-from apps.core.models import TimeStampedModel
+from apps.core.models import OrganizationOwnedModel, TimeStampedModel
 from apps.projects.models import Project
 from .enums import (
     AgentRunStatus,
@@ -15,9 +15,13 @@ from .enums import (
 class GenerationQuerySet(models.QuerySet):
     """Custom queryset for generations."""
 
+    def for_organization(self, organization):
+        """Filter generations owned by a specific organization."""
+        return self.filter(organization=organization)
+
     def for_user(self, user):
-        """Filter generations owned by a specific user."""
-        return self.filter(user=user)
+        """Filter generations created by a specific user."""
+        return self.filter(created_by=user)
 
     def active(self):
         """Filter ongoing generations."""
@@ -38,7 +42,7 @@ class GenerationQuerySet(models.QuerySet):
         return self.filter(status=GenerationStatus.FAILED)
 
 
-class Generation(TimeStampedModel):
+class Generation(OrganizationOwnedModel):
     """Represents an autonomous multi-agent plugin generation lifecycle."""
 
     project = models.ForeignKey(
@@ -47,13 +51,6 @@ class Generation(TimeStampedModel):
         related_name="generations",
         db_index=True,
         help_text="Parent project for this generation.",
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="generations",
-        db_index=True,
-        help_text="User who initiated this generation.",
     )
     prompt = models.TextField(
         help_text="Initial natural language prompt or requirements from user.",
@@ -117,18 +114,22 @@ class Generation(TimeStampedModel):
         verbose_name = "Generation"
         verbose_name_plural = "Generations"
         indexes = [
+            models.Index(fields=["organization", "status"]),
             models.Index(fields=["project", "status"]),
-            models.Index(fields=["user", "status"]),
         ]
 
     def __str__(self) -> str:
         return f"Generation {self.id} [{self.status}] for Project {self.project.name}"
 
     def save(self, *args, **kwargs):
-        """Ensure Generation owner is always strictly derived from Project owner."""
+        """Validate organization matches project organization."""
         if self.project_id:
-            self.user = self.project.user
+            if not self.organization_id:
+                self.organization = self.project.organization
+            elif self.organization_id != self.project.organization_id:
+                raise ValueError("Generation organization must match project organization.")
         super().save(*args, **kwargs)
+
 
 
 class GenerationStep(TimeStampedModel):
