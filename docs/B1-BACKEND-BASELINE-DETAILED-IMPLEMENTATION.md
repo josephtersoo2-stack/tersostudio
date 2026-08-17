@@ -382,4 +382,3 @@ Also run repository searches proving deprecated names and `requirements.txt` ins
 - CI expresses the same verified commands.
 - Removal ledger is complete.
 - No out-of-scope feature or refactor appears in the diff.
-

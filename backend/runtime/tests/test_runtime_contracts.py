@@ -1,10 +1,11 @@
 """Contract compliance tests for Tersuite Agent Runtime abstractions."""
 import unittest
-from runtime.interfaces.runtime import TersuiteAgentRuntime
-from runtime.interfaces.session import AgentSession, SessionConfig, SessionStatus
+
 from runtime.adapters.mock_adapter import MockAgentRuntime, MockAgentSession
 from runtime.adapters.openhands.adapter import OpenHandsAgentRuntime
 from runtime.adapters.openhands.session import OpenHandsAgentSession
+from runtime.interfaces.runtime import TersuiteAgentRuntime
+from runtime.interfaces.session import AgentSession, SessionConfig, SessionStatus
 
 
 class RuntimeContractTests(unittest.TestCase):
@@ -37,7 +38,6 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_compose_and_env_mock_backend_default(self):
         """Verify default Compose and .env.example configuration uses mock backend and forces no Agent Server."""
-        import os
         from pathlib import Path
 
         base_dir = Path(__file__).resolve().parent.parent.parent
@@ -57,4 +57,3 @@ class RuntimeContractTests(unittest.TestCase):
         # 2. Assert docker-compose.yml does not force openhands backend or localhost agent server lines
         self.assertNotIn("AGENT_RUNTIME_BACKEND=openhands", compose_content)
         self.assertNotIn("OPENHANDS_AGENT_SERVER_URL=http://localhost:8010", compose_content)
-

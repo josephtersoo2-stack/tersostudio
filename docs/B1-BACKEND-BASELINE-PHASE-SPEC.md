@@ -113,4 +113,3 @@ B1 is complete only after:
 5. Any blocking review finding is corrected in a separate correction session.
 
 A report or commit alone does not approve the phase.
-

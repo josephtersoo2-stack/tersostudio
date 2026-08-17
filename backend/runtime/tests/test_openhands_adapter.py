@@ -5,11 +5,13 @@ live event callback streaming, and event normalization with zero fallback to hom
 """
 import unittest
 from unittest.mock import MagicMock, patch
+
 import httpx
-from apps.realtime.events import EventType, NormalizedEvent
-from runtime.exceptions import AdapterConnectionError
-from runtime.adapters.openhands.config import OpenHandsServerConfig
+
+from apps.realtime.events import EventType
 from runtime.adapters.openhands.adapter import OpenHandsAgentRuntime
+from runtime.adapters.openhands.config import OpenHandsServerConfig
+from runtime.exceptions import AdapterConnectionError
 from runtime.interfaces.session import (
     ExecutionStatus,
     FailureCategory,

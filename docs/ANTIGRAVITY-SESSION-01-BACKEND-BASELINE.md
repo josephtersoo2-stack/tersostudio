@@ -1,18 +1,14 @@
-# Implementation Instruction — Antigravity Session 01 (B1 Backend Baseline)
+# Antigravity Execution Prompt — Session 01: B1 Backend Baseline
 
-You are working on the existing Tersuite AI Studio repository. This is an implementation and verification session, not a rewrite.
-
----
-
-## 1. Objective
-
-Establish a truthful, reproducible, and secure backend foundation for roadmap milestone B1. Inspect the existing backend first, preserve correct work, correct only foundation defects within this scope, and provide evidence that a clean environment can install and run the backend test baseline.
+Copy only the prompt below into Google Antigravity.
 
 ---
 
-## 2. Required Reading Order
+You are implementing Session 01 for the existing Tersuite repository. Execute the approved B1 specification exactly. You are an implementer, not a product designer or architect.
 
-Read completely in this strict order before editing:
+## Mandatory reading order
+
+Read these files completely before editing:
 
 1. `AGENTS.md`
 2. `docs/TERSUITE-IMPLEMENTATION-ROADMAP.md`
@@ -20,79 +16,64 @@ Read completely in this strict order before editing:
 4. `docs/B1-BACKEND-BASELINE-PHASE-SPEC.md`
 5. `docs/B1-BACKEND-BASELINE-DETAILED-IMPLEMENTATION.md`
 
-If these documents conflict, stop and report the conflict before implementing the affected behavior.
+Then inspect every existing repository file referenced by the detailed implementation specification.
 
----
+## Non-invention rule
 
-## 3. Non-Invention & Implementation Scope
+Do not invent or add any feature, behavior, architecture, abstraction, dependency, endpoint, setting, file, service, agent role, fallback, or user experience that is not explicitly required by the two B1 specifications.
 
-Antigravity is an implementer, not an architect. Do not invent unapproved features, dependencies, models, settings, routes, synthetic fallbacks, or alternative architectures.
+Do not make an independent design decision where the specification is silent or incompatible with the repository. Stop and report the exact ambiguity, conflict, dependency-resolution failure, or repository mismatch. Wait for a correction specification.
 
-This session may change only:
-- Python version declaration and documentation (`.python-version`, `pyproject.toml`, `Dockerfile`, `README.md`)
-- Dependency management and lockfiles (`pyproject.toml`, `uv.lock`, removal of `requirements.txt`)
-- Docker, Compose, and environment baseline configurations (`Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`)
-- Configuration settings parsing and credential separation (`backend/config/settings/base.py`, `backend/runtime/adapters/openhands/config.py`)
-- OpenHands adapter configuration and secret safety (`backend/runtime/adapters/openhands/adapter.py`, `backend/apps/generations/services/execution_service.py`)
-- Truthful health checks (`backend/apps/core/views.py`, `backend/apps/core/tests/test_health.py`)
-- CI workflow (`.github/workflows/backend-ci.yml`)
-- OpenHands integration documentation (`docs/OPENHANDS-INTEGRATION.md`)
-- B1 evidence report (`docs/reports/B1-BACKEND-BASELINE-REPORT.md`)
+Do not use “best judgment,” “reasonable improvement,” or opportunistic cleanup as permission to expand scope.
 
----
+## Execution requirements
 
-## 4. Protected Files & Prohibited Changes
+1. Create a dedicated branch from the current approved base commit.
+2. Record the base commit SHA before editing.
+3. Inspect first; do not rewrite the repository.
+4. Implement every requirement in `docs/B1-BACKEND-BASELINE-DETAILED-IMPLEMENTATION.md` exactly, file by file.
+5. Preserve all files and behaviors that the specification protects.
+6. Remove only the obsolete B1 items explicitly required or proven dead under the removal-ledger rules.
+7. Never delete historical Django migrations.
+8. Never commit or display credentials.
+9. Do not weaken, skip, replace, or falsify tests.
+10. Do not run paid live-provider tests unless credentials were already supplied through the environment and the detailed specification requires the run; B1 does not require paid calls.
+11. Run every required verification command that the environment supports.
+12. If a required command cannot run, report it as not executed with the exact reason.
+13. Create and complete `docs/reports/B1-BACKEND-BASELINE-REPORT.md`.
+14. Review the final diff for scope violations, secrets, debug code, orphan imports, obsolete fallbacks, duplicate configuration, and unreported deletions.
+15. Commit and push the completed work to the dedicated branch.
 
-Do not modify or delete:
-- `frontend/**`
-- Active architecture contracts (`docs/API-CONTRACT.md`, `docs/DATA-MODEL.md`, `docs/CC-02 Implementation Spec.md`, `docs/CC-03-OPERATIONAL-ACTIONS-SPEC.md`, `docs/TERSUITE-CONTROL-CENTER-CC-01-SPEC.md`, `docs/TERSUITE-CONTROL-CENTER-CC-02-SPEC.md`)
-- Django database models or historical database migrations
-- Knowledge-base implementation or seed knowledge data
-- Realtime consumers, auth tokens, state machine, or existing mock adapter
-- B2 or later roadmap features
+## Stop conditions
 
----
+Stop without inventing a solution if:
 
-## 5. Removal Ledger & Pre-Deletion Checks
+- the existing direct dependency versions do not resolve under uv 0.8.13;
+- a required file or contract conflicts with the detailed specification;
+- complying would require an out-of-scope product or OpenHands runtime redesign;
+- a deletion cannot be proven safe;
+- credentials or external authority are required but unavailable;
+- required repository state differs materially from the specification.
 
-Every removal must be classified in the report using `KEEP`, `REFACTOR`, `REPLACE`, `REMOVE`, or `DEFER`. Before deleting any file or configuration setting, perform repository searches to ensure no active code or test relies on orphaned references.
+When stopped, do not commit a partial workaround as completed. Report the blocker and the smallest decision needed from the reviewer.
 
----
+## Final response
 
-## 6. Stop Conditions
+Return:
 
-Stop and report immediately if:
-- Required documents conflict or are missing.
-- OpenHands 1.42.1 packages fail to install or import together on Python 3.12.
-- A test failure cannot be resolved within the B1 boundary.
-- Unspecified architectural decisions are required.
+- session name;
+- base commit SHA;
+- branch;
+- pushed commit SHA;
+- objective status: completed or blocked;
+- every changed, created, and removed file with reason;
+- migrations or `none`;
+- exact commands and passed/failed/skipped counts;
+- removal ledger;
+- exit-criteria evidence;
+- unresolved failures;
+- scope deviations or `none`;
+- security and compatibility notes;
+- link/path to `docs/reports/B1-BACKEND-BASELINE-REPORT.md`.
 
----
-
-## 7. Required Verification Commands
-
-Execute and report the exact results of:
-```bash
-git diff --check
-uv --version
-uv lock --check
-uv sync --frozen --extra dev
-uv run python -c "import importlib.metadata as m; print({p: m.version(p) for p in ['openhands-sdk','openhands-tools','openhands-agent-server','openhands-workspace']})"
-uv run python manage.py check
-uv run python manage.py makemigrations --check --dry-run
-uv run pytest
-docker compose config
-docker build -t tersuite-backend:b1 .
-```
-
----
-
-## 8. Required Evidence Report
-
-Produce `docs/reports/B1-BACKEND-BASELINE-REPORT.md` following the protocol structure with complete file changes, removal ledger, exact test counts, and exit criteria evidence.
-
----
-
-## 9. Independent GitHub Review Gate
-
-Commit and push to `feature/b1-backend-baseline`. A milestone is complete only after independent review verifies the GitHub commit and passing CI checks.
+Do not claim completion unless every B1 exit criterion is satisfied. The pushed GitHub commit will be independently inspected before approval.

@@ -32,7 +32,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U tersuite -d tersuite_test_db"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
@@ -108,4 +108,3 @@ jobs:
 
       - name: Build Docker Container Image
         run: docker build -t tersuite-backend:b1 .
-

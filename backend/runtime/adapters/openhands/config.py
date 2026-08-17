@@ -1,6 +1,7 @@
 """OpenHands Agent Server connection and execution settings."""
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Optional
+
 from pydantic import SecretStr
 
 

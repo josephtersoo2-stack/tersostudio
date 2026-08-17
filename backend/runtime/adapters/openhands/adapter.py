@@ -8,11 +8,11 @@ as its sole execution path:
   - Events & Stats: Direct extraction and normalization from OpenHands state
   - Strict Failure Classification: Rich error categorization without homemade fallback retries
 """
-import asyncio
 import logging
 import os
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+
 import httpx
 from pydantic import SecretStr
 
@@ -21,7 +21,6 @@ from runtime.exceptions import (
     AdapterConnectionError,
     SessionNotFoundError,
     TaskExecutionError,
-    TimeoutExecutionError,
 )
 from runtime.interfaces.runtime import TersuiteAgentRuntime
 from runtime.interfaces.session import (
@@ -32,6 +31,7 @@ from runtime.interfaces.session import (
     SessionStatus,
     TaskResult,
 )
+
 from .config import OpenHandsServerConfig
 from .session import OpenHandsAgentSession
 
@@ -47,17 +47,9 @@ try:
     )
     from openhands.sdk.conversation.impl.remote_conversation import (
         RemoteConversation,
-        RemoteEventsList,
     )
     from openhands.sdk.conversation.state import ConversationExecutionStatus
-    from openhands.sdk.event import (
-        ActionEvent,
-        AgentErrorEvent,
-        Event as OpenHandsEvent,
-        InterruptEvent,
-        MessageEvent,
-        ObservationEvent,
-    )
+    from openhands.sdk.event import Event as OpenHandsEvent
     from openhands.sdk.llm import LLM as OpenHandsLLM
     from openhands.sdk.workspace import RemoteWorkspace as OpenHandsRemoteWorkspace
 
