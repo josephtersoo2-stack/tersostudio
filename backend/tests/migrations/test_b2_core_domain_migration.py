@@ -1,217 +1,281 @@
-from django.contrib.auth import get_user_model
-from django.test import TestCase
-
-from apps.conversations.models import Conversation
-from apps.conversations.services import ConversationMessageService
-from apps.generations.enums import GenerationStatus
-from apps.generations.models import Generation
-from apps.organizations.models import OrganizationMembership
-from apps.organizations.services import ensure_personal_organization
-from apps.projects.models import ProjectSite
-from apps.projects.services import ProjectService
-from apps.sites.enums import SiteEnvironment
-from apps.sites.models import WordPressSite
-from apps.sites.services import create_site_profile_snapshot
+"""Real Django MigrationExecutor tests for B2 Core Domain schema and data migrations."""
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TransactionTestCase
 
 
-User = get_user_model()
-
-
-class B2CoreDomainMigrationIntegrationTests(TestCase):
-    """Verifies complete end-to-end integrity of B2 domain models, migrations, and tenant isolation."""
+class B2CoreDomainMigrationExecutorTests(TransactionTestCase):
+    """Verifies forward and reverse execution of B2 migrations using historical app states."""
 
     databases = {"default"}
 
-    def setUp(self):
-        # 1. Create Users
-        self.user_a = User.objects.create_user(
-            email="tenant.alpha@tersuite.com",
-            password="AlphaPassword123!",
-            first_name="Alpha",
-            last_name="Owner",
-        )
-        self.user_b = User.objects.create_user(
-            email="tenant.beta@tersuite.com",
-            password="BetaPassword123!",
-            first_name="Beta",
-            last_name="Owner",
-        )
+    def get_executor(self):
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        return executor
 
-        # 2. Ensure Personal Organizations
-        self.org_a = ensure_personal_organization(self.user_a)
-        self.org_b = ensure_personal_organization(self.user_b)
+    def test_b2_migration_forward_and_backward(self):
+        """Verify full forward backfill (slug collision, metadata, org isolation) and reversible legacy field restoration."""
+        # Target B1 baseline state
+        b1_targets = [
+            ("accounts", "0001_initial"),
+            ("projects", "0001_initial"),
+            ("generations", "0001_initial"),
+            ("organizations", None),
+            ("products", None),
+            ("sites", None),
+            ("conversations", None),
+        ]
+        b1_nodes = [
+            ("accounts", "0001_initial"),
+            ("projects", "0001_initial"),
+            ("generations", "0001_initial"),
+        ]
 
-    def test_personal_organization_creation_and_membership(self):
-        """Verify personal organization and OWNER membership are properly provisioned."""
-        self.assertTrue(self.org_a.is_personal)
-        self.assertEqual(self.org_a.name, "Alpha Owner's Workspace")
+        try:
+            # 1. Migrate backward to B1 baseline schema
+            executor = self.get_executor()
+            executor.migrate(b1_targets)
+            old_apps = executor.loader.project_state(b1_nodes).apps
 
-        membership = OrganizationMembership.objects.get(
-            organization=self.org_a,
-            user=self.user_a,
-        )
-        self.assertEqual(membership.role, "OWNER")
-        self.assertTrue(membership.is_active)
+            OldUser = old_apps.get_model("accounts", "User")
+            OldProject = old_apps.get_model("projects", "Project")
+            OldGeneration = old_apps.get_model("generations", "Generation")
+            OldStep = old_apps.get_model("generations", "GenerationStep")
+            OldRun = old_apps.get_model("generations", "AgentRun")
+            OldArtifact = old_apps.get_model("generations", "Artifact")
 
-    def test_project_product_and_plugin_target_cohesion(self):
-        """Verify ProjectService provisions Project, WordPressProduct, and PluginTarget consistently."""
-        project = ProjectService.create_project(
-            organization=self.org_a,
-            actor=self.user_a,
-            name="Advanced Affiliate Hub",
-            description="Multi-tier affiliate tracking",
-            plugin_slug="advanced-affiliate-hub",
-            wordpress_version="6.7",
-            php_version="8.3",
-        )
-
-        self.assertEqual(project.organization, self.org_a)
-        self.assertEqual(project.created_by, self.user_a)
-        self.assertIsNotNone(project.product)
-        self.assertEqual(project.product.kind, "PLUGIN")
-        self.assertEqual(project.product.wordpress_version, "6.7")
-        self.assertEqual(project.product.php_version, "8.3")
-
-        # PluginTarget verification
-        plugin_target = project.product.plugin_target
-        self.assertEqual(plugin_target.plugin_slug, "advanced-affiliate-hub")
-        self.assertEqual(plugin_target.namespace_prefix, "AdvancedAffiliateHub")
-
-        # Backward compatibility properties
-        self.assertEqual(project.plugin_slug, "advanced-affiliate-hub")
-        self.assertEqual(project.wordpress_version, "6.7")
-        self.assertEqual(project.php_version, "8.3")
-        self.assertEqual(project.user, self.user_a)
-
-    def test_site_and_profile_snapshot_creation(self):
-        """Verify WordPressSite and immutable SiteProfileSnapshot creation with SHA-256 checksum."""
-        site = WordPressSite.objects.create(
-            organization=self.org_a,
-            created_by=self.user_a,
-            name="Staging Store",
-            url="https://staging.example.com",
-            environment=SiteEnvironment.STAGING,
-        )
-
-        sections = {
-            "server": {"php_version": "8.3.0", "web_server": "nginx/1.24"},
-            "wordpress": {"core_version": "6.7.1", "multisite": False},
-            "active_plugins": [{"name": "WooCommerce", "version": "9.4.0"}],
-        }
-
-        snapshot = create_site_profile_snapshot(
-            site=site,
-            sections=sections,
-            actor=self.user_a,
-            source="manual",
-        )
-
-        self.assertEqual(snapshot.site, site)
-        self.assertEqual(snapshot.version, 1)
-        self.assertEqual(len(snapshot.checksum_sha256), 64)
-
-        # Create second snapshot to test version incrementation
-        snapshot_v2 = create_site_profile_snapshot(
-            site=site,
-            sections=sections,
-            actor=self.user_a,
-            source="manual",
-        )
-        self.assertEqual(snapshot_v2.version, 2)
-
-    def test_project_site_linkage(self):
-        """Verify linking WordPressSite to Project via ProjectSite junction."""
-        project = ProjectService.create_project(
-            organization=self.org_a,
-            actor=self.user_a,
-            name="Affiliate Pro",
-        )
-        site = WordPressSite.objects.create(
-            organization=self.org_a,
-            created_by=self.user_a,
-            name="Alpha Dev Site",
-            url="https://dev.example.com",
-        )
-
-        link = ProjectSite.objects.create(
-            project=project,
-            site=site,
-            organization=self.org_a,
-            purpose="target",
-        )
-
-        self.assertEqual(link.project, project)
-        self.assertEqual(link.site, site)
-        self.assertEqual(project.project_sites.count(), 1)
-
-    def test_conversation_and_message_append_order(self):
-        """Verify strictly ordered, idempotent conversation message appending."""
-        project = ProjectService.create_project(
-            organization=self.org_a,
-            actor=self.user_a,
-            name="Chat Project",
-        )
-
-        conversation = Conversation.objects.create(
-            organization=self.org_a,
-            project=project,
-            created_by=self.user_a,
-            title="Design Discussion",
-        )
-
-        msg1, created1 = ConversationMessageService.append_user_message(
-            conversation=conversation,
-            author=self.user_a,
-            content="Please design an affiliate tracking cookie handler.",
-            client_message_id="msg-uuid-001",
-        )
-        self.assertTrue(created1)
-        self.assertEqual(msg1.sequence, 1)
-
-        # Idempotency test with same client_message_id
-        msg1_dup, created1_dup = ConversationMessageService.append_user_message(
-            conversation=conversation,
-            author=self.user_a,
-            content="Please design an affiliate tracking cookie handler.",
-            client_message_id="msg-uuid-001",
-        )
-        self.assertFalse(created1_dup)
-        self.assertEqual(msg1.id, msg1_dup.id)
-
-        # Next message increments sequence
-        msg2, created2 = ConversationMessageService.append_user_message(
-            conversation=conversation,
-            author=self.user_a,
-            content="Add nonce verification to the REST endpoint.",
-            client_message_id="msg-uuid-002",
-        )
-        self.assertTrue(created2)
-        self.assertEqual(msg2.sequence, 2)
-
-    def test_generation_tenant_scoping_and_querysets(self):
-        """Verify Generation tenant scoping matches parent project organization."""
-        project_a = ProjectService.create_project(
-            organization=self.org_a,
-            actor=self.user_a,
-            name="Project A",
-        )
-        gen_a = Generation.objects.create(
-            organization=self.org_a,
-            project=project_a,
-            created_by=self.user_a,
-            prompt="Build Project A plugin.",
-            status=GenerationStatus.DRAFT,
-        )
-
-        # Mismatch organization must raise ValueError on save()
-        with self.assertRaises(ValueError):
-            Generation.objects.create(
-                organization=self.org_b,
-                project=project_a,
-                created_by=self.user_b,
-                prompt="Illegal cross-tenant generation",
+            # 2. Populate historical B1 records
+            u1 = OldUser.objects.create(
+                email="alice.owner@tersuite.com",
+                password="Password123!",
+                first_name="Alice",
+                last_name="Owner",
+                is_active=True,
+            )
+            u2 = OldUser.objects.create(
+                email="bob.owner@tersuite.com",
+                password="Password123!",
+                first_name="Bob",
+                last_name="Owner",
+                is_active=True,
+            )
+            u3 = OldUser.objects.create(
+                email="charlie.idle@tersuite.com",
+                password="Password123!",
+                first_name="Charlie",
+                last_name="Idle",
+                is_active=True,
             )
 
-        # QuerySet filters
-        self.assertEqual(Generation.objects.for_organization(self.org_a).count(), 1)
-        self.assertEqual(Generation.objects.for_organization(self.org_b).count(), 0)
+            # User 1 with 2 projects sharing the same historical plugin_slug
+            p1_1 = OldProject.objects.create(
+                user=u1,
+                name="WooCommerce Stripe Gateway",
+                slug="woo-stripe-gateway",
+                plugin_slug="woo-stripe",
+                wordpress_version="6.7",
+                php_version="8.2",
+                metadata={"feature": "checkout"},
+            )
+            p1_2 = OldProject.objects.create(
+                user=u1,
+                name="WooCommerce Stripe Connect",
+                slug="woo-stripe-connect",
+                plugin_slug="woo-stripe",
+                wordpress_version="6.6",
+                php_version="8.1",
+                metadata={"feature": "marketplace"},
+            )
+
+            # User 2 with a project
+            p2 = OldProject.objects.create(
+                user=u2,
+                name="Affiliate Pro",
+                slug="affiliate-pro",
+                plugin_slug="affiliate-pro",
+                wordpress_version="6.7",
+                php_version="8.2",
+            )
+
+            # Generation for User 1's project
+            gen = OldGeneration.objects.create(
+                project=p1_1,
+                user=u1,
+                prompt="Build Stripe checkout gateway plugin.",
+                status="DRAFT",
+            )
+            step = OldStep.objects.create(
+                generation=gen,
+                step_number=1,
+                name="Discovery",
+                agent_role="feature_discovery",
+            )
+            run = OldRun.objects.create(
+                step=step,
+                run_number=1,
+                prompt="Discover capabilities",
+            )
+            artifact = OldArtifact.objects.create(
+                generation=gen,
+                name="readme.txt",
+                file_path="readme.txt",
+                storage_key="readme-storage-key",
+            )
+
+            # 3. Migrate forward to the leaf graph
+            executor = self.get_executor()
+            leaf_targets = executor.loader.graph.leaf_nodes()
+            executor.migrate(leaf_targets)
+
+            new_apps = executor.loader.project_state(leaf_targets).apps
+            NewOrg = new_apps.get_model("organizations", "Organization")
+            NewMembership = new_apps.get_model("organizations", "OrganizationMembership")
+            NewProject = new_apps.get_model("projects", "Project")
+            NewProduct = new_apps.get_model("products", "WordPressProduct")
+            NewPluginTarget = new_apps.get_model("products", "PluginTarget")
+            NewGeneration = new_apps.get_model("generations", "Generation")
+
+            # Assert personal organizations and OWNER memberships created
+            org1 = NewOrg.objects.filter(created_by_id=u1.id, is_personal=True).first()
+            self.assertIsNotNone(org1)
+            self.assertTrue(NewMembership.objects.filter(organization=org1, user_id=u1.id, role="OWNER", is_active=True).exists())
+
+            org2 = NewOrg.objects.filter(created_by_id=u2.id, is_personal=True).first()
+            self.assertIsNotNone(org2)
+            self.assertTrue(NewMembership.objects.filter(organization=org2, user_id=u2.id, role="OWNER", is_active=True).exists())
+
+            org3 = NewOrg.objects.filter(created_by_id=u3.id, is_personal=True).first()
+            self.assertIsNotNone(org3)
+            self.assertTrue(NewMembership.objects.filter(organization=org3, user_id=u3.id, role="OWNER", is_active=True).exists())
+
+            # Assert project migration and product slug collision resolution
+            proj1 = NewProject.objects.get(id=p1_1.id)
+            proj2 = NewProject.objects.get(id=p1_2.id)
+
+            self.assertEqual(proj1.organization_id, org1.id)
+            self.assertEqual(proj2.organization_id, org1.id)
+            self.assertEqual(proj1.created_by_id, u1.id)
+            self.assertEqual(proj2.created_by_id, u1.id)
+
+            prod1 = NewProduct.objects.get(id=proj1.product_id)
+            prod2 = NewProduct.objects.get(id=proj2.product_id)
+
+            self.assertEqual(prod1.slug, "woo-stripe")
+            self.assertEqual(prod2.slug, "woo-stripe-2")
+
+            # Check original slug stored in metadata for collided product
+            self.assertEqual(prod2.metadata.get("migration", {}).get("legacy_plugin_slug"), "woo-stripe")
+            self.assertEqual(prod2.metadata.get("feature"), "marketplace")
+
+            # Check PluginTarget invariants
+            pt1 = NewPluginTarget.objects.get(product_id=prod1.id)
+            pt2 = NewPluginTarget.objects.get(product_id=prod2.id)
+            self.assertEqual(pt1.plugin_slug, "woo-stripe")
+            self.assertEqual(pt2.plugin_slug, "woo-stripe-2")
+            self.assertEqual(pt1.text_domain, "woo-stripe")
+            self.assertEqual(pt2.text_domain, "woo-stripe-2")
+
+            # Check Generation ownership
+            migrated_gen = NewGeneration.objects.get(id=gen.id)
+            self.assertEqual(migrated_gen.organization_id, org1.id)
+            self.assertEqual(migrated_gen.created_by_id, u1.id)
+
+            # 4. Migrate backward to B1 baseline schema
+            executor = self.get_executor()
+            executor.migrate(b1_targets)
+
+            rev_apps = executor.loader.project_state(b1_nodes).apps
+            RevProject = rev_apps.get_model("projects", "Project")
+            RevUser = rev_apps.get_model("accounts", "User")
+            RevGeneration = rev_apps.get_model("generations", "Generation")
+
+            rev_p1 = RevProject.objects.get(id=p1_1.id)
+            rev_p2 = RevProject.objects.get(id=p1_2.id)
+
+            self.assertEqual(rev_p1.user_id, u1.id)
+            self.assertEqual(rev_p2.user_id, u1.id)
+            self.assertEqual(rev_p1.plugin_slug, "woo-stripe")
+            self.assertEqual(rev_p2.plugin_slug, "woo-stripe")
+            self.assertEqual(rev_p1.wordpress_version, "6.7")
+            self.assertEqual(rev_p2.wordpress_version, "6.6")
+            self.assertEqual(rev_p1.php_version, "8.2")
+            self.assertEqual(rev_p2.php_version, "8.1")
+
+            self.assertTrue(RevUser.objects.filter(id=u1.id).exists())
+            self.assertTrue(RevUser.objects.filter(id=u2.id).exists())
+            self.assertTrue(RevUser.objects.filter(id=u3.id).exists())
+            self.assertTrue(RevGeneration.objects.filter(id=gen.id).exists())
+
+        finally:
+            # 5. Restore full leaf state for remaining test runs
+            executor = self.get_executor()
+            executor.migrate(executor.loader.graph.leaf_nodes())
+
+    def test_unmarked_personal_organization_survives_reversal(self):
+        """Verify pre-existing unmarked personal org at organizations.0001 state survives organizations.0002 rollback."""
+        # State right at organizations.0001
+        org_0001_targets = [
+            ("accounts", "0001_initial"),
+            ("organizations", "0001_initial"),
+            ("projects", "0001_initial"),
+            ("generations", "0001_initial"),
+            ("products", None),
+            ("sites", None),
+            ("conversations", None),
+        ]
+        org_0001_nodes = [
+            ("accounts", "0001_initial"),
+            ("organizations", "0001_initial"),
+            ("projects", "0001_initial"),
+            ("generations", "0001_initial"),
+        ]
+
+        try:
+            executor = self.get_executor()
+            executor.migrate(org_0001_targets)
+            apps_0001 = executor.loader.project_state(org_0001_nodes).apps
+
+            User_0001 = apps_0001.get_model("accounts", "User")
+            Org_0001 = apps_0001.get_model("organizations", "Organization")
+
+            user_unmarked = User_0001.objects.create(
+                email="preexisting@tersuite.com",
+                password="Password123!",
+                is_active=True,
+            )
+            # Create unmarked pre-existing personal org
+            unmarked_org = Org_0001.objects.create(
+                name="Preexisting Org",
+                slug="preexisting-org",
+                is_personal=True,
+                is_active=True,
+                created_by=user_unmarked,
+                updated_by=user_unmarked,
+                metadata={},
+            )
+
+            # Another user without an org
+            user_without_org = User_0001.objects.create(
+                email="newbie@tersuite.com",
+                password="Password123!",
+                is_active=True,
+            )
+
+            # Migrate forward to organizations.0002
+            executor = self.get_executor()
+            executor.migrate([("organizations", "0002_backfill_personal_organizations")])
+
+            # Migrate backward to organizations.0001
+            executor = self.get_executor()
+            executor.migrate(org_0001_targets)
+
+            apps_after_rev = executor.loader.project_state(org_0001_nodes).apps
+            Org_after_rev = apps_after_rev.get_model("organizations", "Organization")
+
+            # Unmarked org must still exist!
+            self.assertTrue(Org_after_rev.objects.filter(id=unmarked_org.id).exists())
+
+        finally:
+            executor = self.get_executor()
+            executor.migrate(executor.loader.graph.leaf_nodes())

@@ -11,7 +11,7 @@ from apps.generations.services.execution_service import ExecutionService
 from apps.organizations.services import ensure_personal_organization
 from apps.projects.services import ProjectService
 from apps.realtime.events import EventType
-from runtime.interfaces.session import FailureCategory, TaskResult
+from runtime.exceptions import AdapterConnectionError, TimeoutExecutionError
 
 User = get_user_model()
 
@@ -62,126 +62,202 @@ class ExecutionServiceTests(TestCase):
 
         self.step.status = StepStatus.COMPLETED
         self.step.save()
+
         with self.assertRaises(StepNotExecutableError):
             ExecutionService.create_and_dispatch(self.step)
 
-    @patch("apps.generations.tasks.execute_agent_run.delay")
-    def test_create_and_dispatch_success(self, mock_task_delay):
-        """Verify create_and_dispatch creates QUEUED AgentRun and queues Celery task."""
+    def test_create_and_dispatch_success(self):
+        """Verify create_and_dispatch successfully enqueues step execution."""
         self.generation.status = GenerationStatus.BUILDING
         self.generation.save()
 
-        with self.captureOnCommitCallbacks(execute=True):
-            agent_run = ExecutionService.create_and_dispatch(self.step)
+        run = ExecutionService.create_and_dispatch(self.step)
 
+        self.assertEqual(run.status, AgentRunStatus.QUEUED)
+        self.assertEqual(run.step, self.step)
+        self.assertEqual(run.run_number, 1)
 
-        self.assertIsNotNone(agent_run)
-        self.assertEqual(agent_run.status, AgentRunStatus.QUEUED)
-        self.assertEqual(agent_run.run_number, 1)
-        self.assertEqual(agent_run.step, self.step)
-
-        # Verify step marked RUNNING
         self.step.refresh_from_db()
         self.assertEqual(self.step.status, StepStatus.RUNNING)
         self.assertIsNotNone(self.step.started_at)
 
-        # Verify task queued
-        mock_task_delay.assert_called_once_with(str(agent_run.id))
-
-    @patch("apps.generations.services.execution_service.GenerationEventPublisher")
-    @patch("apps.generations.services.execution_service._build_runtime")
-    def test_execute_agent_run_success_flow(self, mock_build_runtime, mock_publisher_cls):
-        """Verify execute_agent_run executes runtime and marks run/step COMPLETED on success."""
+    def test_run_skips_non_queued_agent_run(self):
+        """Verify run skips execution if AgentRun is not in QUEUED state."""
         self.generation.status = GenerationStatus.BUILDING
         self.generation.save()
 
-        agent_run = AgentRun.objects.create(
+        run = AgentRun.objects.create(
+            step=self.step,
+            run_number=1,
+            status=AgentRunStatus.RUNNING,
+            prompt="Prompt",
+        )
+
+        result_run = ExecutionService.run(str(run.id))
+        self.assertEqual(result_run.status, AgentRunStatus.RUNNING)
+
+    def test_run_success_flow_and_live_event_streaming(self):
+        """Verify execution flow completes successfully with mock adapter and streams intermediate events."""
+        self.generation.status = GenerationStatus.BUILDING
+        self.generation.save()
+
+        run = AgentRun.objects.create(
             step=self.step,
             run_number=1,
             status=AgentRunStatus.QUEUED,
-            prompt="Generate PHP code.",
+            prompt="Prompt",
         )
 
-        mock_publisher = MagicMock()
-        mock_publisher_cls.return_value = mock_publisher
+        published_events = []
+        with patch("apps.realtime.event_publisher.GenerationEventPublisher.publish", side_effect=published_events.append):
+            result_run = ExecutionService.run(str(run.id))
 
-        mock_session = MagicMock()
-        mock_session.session_id = "test-session-123"
-        mock_session.remote_conversation_id = "remote-conv-456"
+        self.assertEqual(result_run.status, AgentRunStatus.COMPLETED)
+        self.assertIsNotNone(result_run.completed_at)
+        self.assertIn("successfully in mock environment", result_run.output)
 
-        mock_runtime = MagicMock()
-        mock_runtime.create_session.return_value = mock_session
-        mock_runtime.send_task.return_value = TaskResult(
-            session_id="test-session-123",
-            success=True,
-            output="Generated plugin code successfully.",
-            token_usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
-        )
-        mock_build_runtime.return_value = mock_runtime
-
-        result = ExecutionService.execute_agent_run(str(agent_run.id))
-
-        self.assertEqual(result.status, AgentRunStatus.COMPLETED)
-        agent_run.refresh_from_db()
-        self.assertEqual(agent_run.status, AgentRunStatus.COMPLETED)
-        self.assertEqual(agent_run.output, "Generated plugin code successfully.")
-        self.assertEqual(agent_run.session_id, "test-session-123")
-        self.assertEqual(agent_run.remote_conversation_id, "remote-conv-456")
-        self.assertIsNotNone(agent_run.completed_at)
-
-        # Verify step marked COMPLETED
         self.step.refresh_from_db()
         self.assertEqual(self.step.status, StepStatus.COMPLETED)
-        self.assertIsNotNone(self.step.completed_at)
 
-        # Verify realtime events published
-        self.assertTrue(mock_publisher.publish.called)
+        # Confirm success does NOT automatically advance the parent generation
+        self.generation.refresh_from_db()
+        self.assertEqual(self.generation.status, GenerationStatus.BUILDING)
 
-    @patch("apps.generations.services.execution_service.GenerationEventPublisher")
-    @patch("apps.generations.services.execution_service._build_runtime")
-    def test_execute_agent_run_failure_flow(self, mock_build_runtime, mock_publisher_cls):
-        """Verify execute_agent_run handles execution failure, sets failure_category and transitions generation to FAILED."""
+        # Verify live event streaming occurred during execution
+        event_types = [e.event_type for e in published_events]
+        self.assertIn(EventType.AGENT_STARTED, event_types)
+        self.assertIn(EventType.AGENT_THINKING, event_types)
+        self.assertIn(EventType.AGENT_TOOL_STARTED, event_types)
+        self.assertIn(EventType.AGENT_TOOL_FINISHED, event_types)
+        self.assertIn(EventType.AGENT_COMPLETED, event_types)
+        self.assertIn(EventType.GENERATION_STEP_COMPLETED, event_types)
+
+        # Verify all streamed events have correct generation_id and agent_run_id
+        for ev in published_events:
+            self.assertEqual(ev.generation_id, str(self.generation.id))
+            self.assertEqual(ev.agent_run_id, str(run.id))
+
+    def test_run_failure_classification_timeout(self):
+        """Verify timeout execution failure properly records TIMEOUT category and retryable=True."""
         self.generation.status = GenerationStatus.BUILDING
         self.generation.save()
 
-        agent_run = AgentRun.objects.create(
+        run = AgentRun.objects.create(
             step=self.step,
             run_number=1,
             status=AgentRunStatus.QUEUED,
-            prompt="Generate PHP code.",
+            prompt="FORCE_MOCK_FAILURE:TIMEOUT:Execution exceeded 300 seconds",
         )
 
-        mock_publisher = MagicMock()
-        mock_publisher_cls.return_value = mock_publisher
+        result_run = ExecutionService.run(str(run.id))
 
-        mock_session = MagicMock()
-        mock_session.session_id = "test-session-123"
-        mock_session.remote_conversation_id = "remote-conv-456"
+        self.assertEqual(result_run.status, AgentRunStatus.FAILED)
+        self.assertEqual(result_run.failure_category, "TIMEOUT")
+        self.assertTrue(result_run.error_details.get("retryable"))
+        self.assertEqual(result_run.error_details.get("error"), "Execution exceeded 300 seconds")
 
-        mock_runtime = MagicMock()
-        mock_runtime.create_session.return_value = mock_session
-        mock_runtime.send_task.return_value = TaskResult(
-            session_id="test-session-123",
-            success=False,
-            failure_category=FailureCategory.NETWORK_CONNECTION,
-            error="OpenHands server connection refused.",
-            retryable=True,
-            error_details={"error": "OpenHands server connection refused."},
+        self.step.refresh_from_db()
+        self.assertEqual(self.step.status, StepStatus.FAILED)
+        self.assertEqual(self.step.error_message, "Execution exceeded 300 seconds")
+
+        self.generation.refresh_from_db()
+        self.assertEqual(self.generation.status, GenerationStatus.FAILED)
+        self.assertEqual(self.generation.metadata.get("state_history")[-1].get("failure_category"), "TIMEOUT")
+
+    def test_run_failure_classification_network(self):
+        """Verify network execution failure properly records NETWORK_CONNECTION category and retryable=True."""
+        self.generation.status = GenerationStatus.BUILDING
+        self.generation.save()
+
+        run = AgentRun.objects.create(
+            step=self.step,
+            run_number=1,
+            status=AgentRunStatus.QUEUED,
+            prompt="FORCE_MOCK_FAILURE:NETWORK:Connection refused by host",
         )
-        mock_build_runtime.return_value = mock_runtime
 
-        result = ExecutionService.execute_agent_run(str(agent_run.id))
+        result_run = ExecutionService.run(str(run.id))
 
-        self.assertEqual(result.status, AgentRunStatus.FAILED)
-        agent_run.refresh_from_db()
-        self.assertEqual(agent_run.status, AgentRunStatus.FAILED)
-        self.assertEqual(agent_run.failure_category, "NETWORK_CONNECTION")
+        self.assertEqual(result_run.status, AgentRunStatus.FAILED)
+        self.assertEqual(result_run.failure_category, "NETWORK_CONNECTION")
+        self.assertTrue(result_run.error_details.get("retryable"))
 
-        # Verify step marked FAILED
         self.step.refresh_from_db()
         self.assertEqual(self.step.status, StepStatus.FAILED)
 
-        # Verify generation transitioned to FAILED
         self.generation.refresh_from_db()
         self.assertEqual(self.generation.status, GenerationStatus.FAILED)
-        self.assertEqual(self.generation.failure_category, "NETWORK_CONNECTION")
+        self.assertEqual(self.generation.metadata.get("state_history")[-1].get("failure_category"), "NETWORK_CONNECTION")
+
+    def test_run_failure_classification_model_error(self):
+        """Verify model error failure properly records MODEL_ERROR category and retryable=False."""
+        self.generation.status = GenerationStatus.BUILDING
+        self.generation.save()
+
+        run = AgentRun.objects.create(
+            step=self.step,
+            run_number=1,
+            status=AgentRunStatus.QUEUED,
+            prompt="FORCE_MOCK_FAILURE:MODEL:Invalid model parameter or context length exceeded",
+        )
+
+        result_run = ExecutionService.run(str(run.id))
+
+        self.assertEqual(result_run.status, AgentRunStatus.FAILED)
+        self.assertEqual(result_run.failure_category, "MODEL_ERROR")
+        self.assertFalse(result_run.error_details.get("retryable"))
+
+        self.step.refresh_from_db()
+        self.assertEqual(self.step.status, StepStatus.FAILED)
+
+        self.generation.refresh_from_db()
+        self.assertEqual(self.generation.status, GenerationStatus.FAILED)
+
+    def test_run_failure_classification_tool_error(self):
+        """Verify tool error failure properly records TOOL_ERROR category."""
+        self.generation.status = GenerationStatus.BUILDING
+        self.generation.save()
+
+        run = AgentRun.objects.create(
+            step=self.step,
+            run_number=1,
+            status=AgentRunStatus.QUEUED,
+            prompt="FORCE_MOCK_FAILURE:TOOL:Command 'git' failed with exit status 1",
+        )
+
+        result_run = ExecutionService.run(str(run.id))
+
+        self.assertEqual(result_run.status, AgentRunStatus.FAILED)
+        self.assertEqual(result_run.failure_category, "TOOL_ERROR")
+        self.assertFalse(result_run.error_details.get("retryable"))
+
+        self.step.refresh_from_db()
+        self.assertEqual(self.step.status, StepStatus.FAILED)
+
+        self.generation.refresh_from_db()
+        self.assertEqual(self.generation.status, GenerationStatus.FAILED)
+
+    def test_run_runtime_exception_during_create_session(self):
+        """Verify runtime error during create_session is classified properly as NETWORK_CONNECTION."""
+        self.generation.status = GenerationStatus.BUILDING
+        self.generation.save()
+
+        run = AgentRun.objects.create(
+            step=self.step,
+            run_number=1,
+            status=AgentRunStatus.QUEUED,
+            prompt="Regular prompt",
+        )
+
+        with patch("runtime.adapters.mock_adapter.MockAgentRuntime.create_session", side_effect=AdapterConnectionError("Server offline")):
+            result_run = ExecutionService.run(str(run.id))
+
+        self.assertEqual(result_run.status, AgentRunStatus.FAILED)
+        self.assertEqual(result_run.failure_category, "NETWORK_CONNECTION")
+        self.assertTrue(result_run.error_details.get("retryable"))
+
+        self.step.refresh_from_db()
+        self.assertEqual(self.step.status, StepStatus.FAILED)
+
+        self.generation.refresh_from_db()
+        self.assertEqual(self.generation.status, GenerationStatus.FAILED)

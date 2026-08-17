@@ -1,10 +1,13 @@
 """Comprehensive tests for Accounts and Authentication foundation."""
+from unittest.mock import patch
 from django.test import TestCase
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 from rest_framework import status
 from rest_framework.authtoken.models import Token
+
+from apps.organizations.models import Organization, OrganizationMembership
 
 User = get_user_model()
 
@@ -59,8 +62,8 @@ class AuthenticationAPITests(TestCase):
             "last_name": "Smith",
         }
 
-    def test_register_user_successful(self):
-        """Verify successful registration returns HTTP 201 and token."""
+    def test_register_user_successful_and_provisions_personal_org(self):
+        """Verify successful registration returns HTTP 201, token, and provisions personal org as OWNER."""
         response = self.client.post(self.register_url, self.user_data)
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -69,6 +72,31 @@ class AuthenticationAPITests(TestCase):
         self.assertIn("user", data)
         self.assertEqual(data["user"]["email"], "engineer@tersuite.com")
         self.assertEqual(data["user"]["full_name"], "Alice Smith")
+
+        # Verify personal organization provisioned
+        user = User.objects.get(email="engineer@tersuite.com")
+        personal_org = Organization.objects.filter(created_by=user, is_personal=True).first()
+        self.assertIsNotNone(personal_org)
+
+        membership = OrganizationMembership.objects.filter(organization=personal_org, user=user).first()
+        self.assertIsNotNone(membership)
+        self.assertEqual(membership.role, "OWNER")
+        self.assertTrue(membership.is_active)
+
+        # Verify membership in user payload
+        self.assertIn("organization_memberships", data["user"])
+        self.assertEqual(len(data["user"]["organization_memberships"]), 1)
+        self.assertEqual(data["user"]["organization_memberships"][0]["role"], "OWNER")
+        self.assertTrue(data["user"]["organization_memberships"][0]["is_personal"])
+
+    def test_register_rollback_on_personal_org_failure(self):
+        """Verify registration rolls back user creation atomically if org provisioning fails."""
+        with patch("apps.accounts.serializers.ensure_personal_organization", side_effect=RuntimeError("Org creation failed")):
+            response = self.client.post(self.register_url, self.user_data)
+            self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        self.assertFalse(User.objects.filter(email=self.user_data["email"]).exists())
+        self.assertFalse(Organization.objects.filter(slug__icontains="engineer").exists())
 
     def test_register_duplicate_email_fails(self):
         """Verify registering existing email returns validation error."""
@@ -123,22 +151,22 @@ class AuthenticationAPITests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_current_user_authenticated(self):
-        """Verify /api/v1/auth/me/ returns authenticated user data when Token is supplied."""
-        user = User.objects.create_user(
-            email=self.user_data["email"],
-            password=self.user_data["password"],
-            first_name="Alice",
-        )
-        token, _ = Token.objects.get_or_create(user=user)
+    def test_current_user_authenticated_with_memberships(self):
+        """Verify /api/v1/auth/me/ returns authenticated user data with active organization memberships."""
+        # Use registration endpoint to create user with personal org
+        reg_response = self.client.post(self.register_url, self.user_data)
+        token_key = reg_response.json()["token"]
 
-        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token_key}")
         response = self.client.get(self.me_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
-        self.assertEqual(data["user"]["email"], user.email)
+        self.assertEqual(data["user"]["email"], "engineer@tersuite.com")
         self.assertEqual(data["user"]["first_name"], "Alice")
+        self.assertIn("organization_memberships", data["user"])
+        self.assertEqual(len(data["user"]["organization_memberships"]), 1)
+        self.assertEqual(data["user"]["organization_memberships"][0]["role"], "OWNER")
 
     def test_current_user_unauthenticated_fails(self):
         """Verify /api/v1/auth/me/ returns HTTP 401 when unauthenticated."""

@@ -51,7 +51,7 @@ class ProjectSiteCreateSerializer(serializers.Serializer):
     site_id = serializers.UUIDField()
     purpose = serializers.ChoiceField(
         choices=ProjectSitePurpose.choices,
-        default=ProjectSitePurpose.DEVELOPMENT,
+        default=ProjectSitePurpose.PRIMARY,
     )
 
 
@@ -61,19 +61,14 @@ class ProjectSerializer(serializers.ModelSerializer):
     organization_id = serializers.UUIDField(source="organization.id", read_only=True)
     created_by_id = serializers.UUIDField(source="created_by.id", read_only=True)
     updated_by_id = serializers.UUIDField(source="updated_by.id", read_only=True)
-    product = WordPressProductSerializer(read_only=True)
+    user_id = serializers.UUIDField(source="created_by.id", read_only=True)
+    product = WordPressProductSerializer(required=False)
     generations_count = serializers.SerializerMethodField()
 
-    # Read-only compatibility aliases
-    user_id = serializers.UUIDField(source="created_by.id", read_only=True)
-    plugin_slug = serializers.SerializerMethodField()
-    wordpress_version = serializers.SerializerMethodField()
-    php_version = serializers.SerializerMethodField()
-
-    # Optional write-only compatibility fields for creation
-    input_plugin_slug = serializers.CharField(write_only=True, required=False, source="plugin_slug")
-    input_wordpress_version = serializers.CharField(write_only=True, required=False, source="wordpress_version")
-    input_php_version = serializers.CharField(write_only=True, required=False, source="php_version")
+    # Legacy compatibility input/output fields
+    plugin_slug = serializers.CharField(required=False, allow_blank=True)
+    wordpress_version = serializers.CharField(required=False, default="6.7")
+    php_version = serializers.CharField(required=False, default="8.2")
 
     class Meta:
         model = Project
@@ -90,9 +85,6 @@ class ProjectSerializer(serializers.ModelSerializer):
             "plugin_slug",
             "wordpress_version",
             "php_version",
-            "input_plugin_slug",
-            "input_wordpress_version",
-            "input_php_version",
             "metadata",
             "is_archived",
             "generations_count",
@@ -106,10 +98,6 @@ class ProjectSerializer(serializers.ModelSerializer):
             "created_by_id",
             "updated_by_id",
             "slug",
-            "product",
-            "plugin_slug",
-            "wordpress_version",
-            "php_version",
             "generations_count",
             "created_at",
             "updated_at",
@@ -119,20 +107,41 @@ class ProjectSerializer(serializers.ModelSerializer):
         validate_safe_json_object(value)
         return value
 
-    def get_plugin_slug(self, obj) -> str:
-        if hasattr(obj, "product") and obj.product and hasattr(obj.product, "plugin_target"):
-            return obj.product.plugin_target.plugin_slug
-        return ""
+    def validate(self, attrs):
+        product_data = attrs.get("product")
+        plugin_slug = attrs.get("plugin_slug")
+        wp_ver = attrs.get("wordpress_version")
+        php_ver = attrs.get("php_version")
 
-    def get_wordpress_version(self, obj) -> str:
-        if hasattr(obj, "product") and obj.product:
-            return obj.product.wordpress_version
-        return "6.7"
+        if product_data and isinstance(product_data, dict):
+            pt_data = product_data.get("plugin_target", {})
+            nested_plugin_slug = pt_data.get("plugin_slug") or product_data.get("slug")
+            if plugin_slug and nested_plugin_slug and plugin_slug.strip().lower() != nested_plugin_slug.strip().lower():
+                raise serializers.ValidationError(
+                    "Conflicting plugin_slug values provided in top-level and nested product payload.",
+                    code="conflicting_product_fields",
+                )
+            nested_wp = product_data.get("wordpress_version")
+            if wp_ver and nested_wp and wp_ver.strip() != nested_wp.strip():
+                raise serializers.ValidationError(
+                    "Conflicting wordpress_version values provided in top-level and nested product payload.",
+                    code="conflicting_product_fields",
+                )
+            nested_php = product_data.get("php_version")
+            if php_ver and nested_php and php_ver.strip() != nested_php.strip():
+                raise serializers.ValidationError(
+                    "Conflicting php_version values provided in top-level and nested product payload.",
+                    code="conflicting_product_fields",
+                )
 
-    def get_php_version(self, obj) -> str:
-        if hasattr(obj, "product") and obj.product:
-            return obj.product.php_version
-        return "8.2"
+        return attrs
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        ret["plugin_slug"] = instance.plugin_slug
+        ret["wordpress_version"] = instance.wordpress_version
+        ret["php_version"] = instance.php_version
+        return ret
 
     def get_generations_count(self, obj) -> int:
         if hasattr(obj, "generations_count_annotated"):
@@ -148,17 +157,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             organization = request.tersuite_organization
 
         actor = request.user if request and request.user.is_authenticated else None
-
-        plugin_slug = validated_data.pop("plugin_slug", None)
-        wp_version = validated_data.pop("wordpress_version", "6.7")
-        php_version = validated_data.pop("php_version", "8.2")
-
-        product_payload = {
-            "display_name": validated_data.get("name"),
-            "plugin_slug": plugin_slug,
-            "wordpress_version": wp_version,
-            "php_version": php_version,
-        }
+        product_data = validated_data.pop("product", None)
 
         return ProjectService.create_project(
             organization=organization,
@@ -166,6 +165,27 @@ class ProjectSerializer(serializers.ModelSerializer):
             name=validated_data.get("name"),
             description=validated_data.get("description", ""),
             slug=validated_data.get("slug"),
-            product_payload=product_payload,
+            product_payload=product_data,
             metadata=validated_data.get("metadata", {}),
+            plugin_slug=validated_data.get("plugin_slug"),
+            wordpress_version=validated_data.get("wordpress_version", "6.7"),
+            php_version=validated_data.get("php_version", "8.2"),
+            is_archived=validated_data.get("is_archived", False),
+        )
+
+    def update(self, instance, validated_data):
+        request = self.context.get("request")
+        actor = request.user if request and request.user.is_authenticated else None
+        product_data = validated_data.pop("product", None)
+
+        return ProjectService.update_project(
+            project=instance,
+            actor=actor,
+            name=validated_data.get("name"),
+            description=validated_data.get("description"),
+            metadata=validated_data.get("metadata"),
+            product_payload=product_data,
+            plugin_slug=validated_data.get("plugin_slug"),
+            wordpress_version=validated_data.get("wordpress_version"),
+            php_version=validated_data.get("php_version"),
         )

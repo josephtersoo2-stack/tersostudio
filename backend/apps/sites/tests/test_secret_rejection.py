@@ -43,7 +43,7 @@ class TestSecretRejection:
             "wordpress_version": "6.7",
             "server": {"database_url": "postgres://user:pass@localhost:5432/db"},
         }
-        resp = self.client.post(f"/api/v1/sites/{self.site.id}/snapshots/", payload, format="json")
+        resp = self.client.post(f"/api/v1/sites/{self.site.id}/profiles/", payload, format="json")
         assert resp.status_code == status.HTTP_400_BAD_REQUEST
         err = resp.json()["error"]
         assert "database_url" in str(err)

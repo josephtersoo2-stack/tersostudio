@@ -6,7 +6,7 @@ import django.db.models.deletion
 
 def backfill_generation_org_and_audit(apps, schema_editor):
     Generation = apps.get_model("generations", "Generation")
-    for gen in Generation.objects.select_related("project").all():
+    for gen in Generation.objects.all():
         if hasattr(gen, "project") and gen.project:
             gen.organization = gen.project.organization
         if hasattr(gen, "created_by") and gen.created_by:
@@ -30,11 +30,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # 1. Rename user to created_by
-        migrations.RenameField(
+        # 1. Remove old user index while field is still named 'user'
+        migrations.RemoveIndex(
             model_name="generation",
-            old_name="user",
-            new_name="created_by",
+            name="generations_user_id_e6cabc_idx",
         ),
         # 2. Add nullable organization and updated_by
         migrations.AddField(
@@ -60,22 +59,13 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        # 3. Backfill data from project
-        migrations.RunPython(
-            backfill_generation_org_and_audit,
-            reverse_code=reverse_generation_org_and_audit,
-        ),
-        # 4. Make organization non-nullable
-        migrations.AlterField(
+        # 3. Rename user to created_by
+        migrations.RenameField(
             model_name="generation",
-            name="organization",
-            field=models.ForeignKey(
-                help_text="Tenant organization that owns this resource.",
-                on_delete=django.db.models.deletion.PROTECT,
-                related_name="%(app_label)s_%(class)s_records",
-                to="organizations.organization",
-            ),
+            old_name="user",
+            new_name="created_by",
         ),
+        # 4. Alter created_by to SET_NULL
         migrations.AlterField(
             model_name="generation",
             name="created_by",
@@ -88,11 +78,23 @@ class Migration(migrations.Migration):
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
-        # 5. Remove old index and add new organization index
-        migrations.RemoveIndex(
-            model_name="generation",
-            name="generations_user_id_e6cabc_idx",
+        # 5. Backfill data from project
+        migrations.RunPython(
+            backfill_generation_org_and_audit,
+            reverse_code=reverse_generation_org_and_audit,
         ),
+        # 6. Make organization non-nullable
+        migrations.AlterField(
+            model_name="generation",
+            name="organization",
+            field=models.ForeignKey(
+                help_text="Tenant organization that owns this resource.",
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="%(app_label)s_%(class)s_records",
+                to="organizations.organization",
+            ),
+        ),
+        # 7. Add new organization index
         migrations.AddIndex(
             model_name="generation",
             index=models.Index(fields=["organization", "status"], name="generations_organiz_8247d8_idx"),

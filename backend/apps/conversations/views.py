@@ -1,14 +1,15 @@
 """REST API ViewSets for Conversations and Messages."""
+import uuid
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
 from django.http import Http404
-from rest_framework import mixins, permissions, status, viewsets
+from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from apps.organizations.context import OrganizationContextMixin
-from apps.organizations.permissions import HasOrganizationWriteAccess
+from apps.organizations.permissions import HasOrganizationReadAccess, HasOrganizationWriteAccess
 from apps.projects.models import Project
 from .models import Conversation, ConversationMessage
 from .serializers import (
@@ -20,11 +21,19 @@ from .services import ConversationMessageService
 
 
 class ConversationViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
-    """ViewSet for managing project discussions and message threads."""
+    """ViewSet for managing project discussions and message threads (List, Create, Retrieve, Patch, Archive).
+    Root DELETE and PUT return 405 Method Not Allowed.
+    """
 
-    permission_classes = [permissions.IsAuthenticated, HasOrganizationWriteAccess]
+    http_method_names = ["get", "post", "patch", "head", "options"]
     serializer_class = ConversationSerializer
     lookup_field = "id"
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "messages", "message_detail"):
+            if self.request.method in permissions.SAFE_METHODS:
+                return [permissions.IsAuthenticated(), HasOrganizationReadAccess()]
+        return [permissions.IsAuthenticated(), HasOrganizationWriteAccess()]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False) or not self.request.user.is_authenticated:
@@ -36,6 +45,10 @@ class ConversationViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
         project_id = self.request.query_params.get("project_id")
         if project_id:
             qs = qs.filter(project_id=project_id)
+
+        purpose = self.request.query_params.get("purpose")
+        if purpose:
+            qs = qs.filter(purpose=purpose.upper())
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -69,9 +82,14 @@ class ConversationViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
             updated_by=self.request.user,
         )
 
+    def perform_update(self, serializer):
+        serializer.save(
+            updated_by=self.request.user,
+        )
+
     @action(detail=True, methods=["post"], url_path="archive")
     def archive(self, request, id=None):
-        """Archive a conversation to close discussion."""
+        """Archive a conversation (idempotent)."""
         conv = self.get_object()
         archived = ConversationMessageService.archive_conversation(conv, request.user)
         return Response(ConversationSerializer(archived).data)
@@ -104,33 +122,28 @@ class ConversationViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
             except DjangoValidationError as exc:
                 raise ValidationError({"detail": exc.message}, code=getattr(exc, "code", "error"))
 
+            data = ConversationMessageSerializer(msg).data
+            data["idempotent_replay"] = not created
             res_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-            return Response(ConversationMessageSerializer(msg).data, status=res_status)
+            return Response(data, status=res_status)
 
+    @action(detail=True, methods=["get"], url_path="messages/(?P<message_id>[^/.]+)")
+    def message_detail(self, request, id=None, message_id=None):
+        """Retrieve a specific message in this conversation."""
+        conv = self.get_object()
 
-class ConversationMessageViewSet(
-    OrganizationContextMixin,
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    """Read-only viewset for querying recorded conversation messages."""
+        try:
+            parsed_msg_id = uuid.UUID(str(message_id))
+        except (ValueError, TypeError):
+            raise Http404("Message not found.")
 
-    permission_classes = [permissions.IsAuthenticated, HasOrganizationWriteAccess]
-    serializer_class = ConversationMessageSerializer
-    lookup_field = "id"
+        msg = ConversationMessage.objects.filter(
+            id=parsed_msg_id,
+            conversation=conv,
+            organization=self.get_organization(),
+        ).first()
 
-    def get_queryset(self):
-        if getattr(self, "swagger_fake_view", False) or not self.request.user.is_authenticated:
-            return ConversationMessage.objects.none()
+        if not msg:
+            raise Http404("Message not found.")
 
-        org = self.get_organization()
-        qs = ConversationMessage.objects.select_related("author", "conversation", "organization").filter(
-            organization=org
-        )
-
-        conv_id = self.request.query_params.get("conversation_id")
-        if conv_id:
-            qs = qs.filter(conversation_id=conv_id)
-
-        return qs.order_by("sequence", "created_at")
+        return Response(ConversationMessageSerializer(msg).data)

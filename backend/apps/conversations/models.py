@@ -1,5 +1,6 @@
 """Data models for Project Conversations and Messages."""
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from apps.core.models import OrganizationOwnedModel, TimeStampedModel
 from apps.core.validators import validate_safe_json_object
@@ -23,7 +24,8 @@ class Conversation(OrganizationOwnedModel):
     purpose = models.CharField(
         max_length=30,
         choices=ConversationPurpose.choices,
-        default=ConversationPurpose.GENERAL,
+        default=ConversationPurpose.PROJECT_DISCOVERY,
+        db_index=True,
         help_text="Functional purpose of the conversation.",
     )
     status = models.CharField(
@@ -33,13 +35,14 @@ class Conversation(OrganizationOwnedModel):
         db_index=True,
         help_text="Active or archived status.",
     )
-    next_message_sequence = models.PositiveIntegerField(
+    next_message_sequence = models.PositiveBigIntegerField(
         default=1,
         help_text="Monotonically increasing sequence index for next message.",
     )
     last_message_at = models.DateTimeField(
         null=True,
         blank=True,
+        db_index=True,
         help_text="Timestamp when the most recent message was added.",
     )
     metadata = models.JSONField(
@@ -54,9 +57,19 @@ class Conversation(OrganizationOwnedModel):
         verbose_name_plural = "Conversations"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["organization", "status"]),
-            models.Index(fields=["project", "status"]),
+            models.Index(
+                fields=["organization", "project", "status"],
+                name="conversatio_organiz_e1ff9e_idx",
+            ),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.project and self.organization_id != self.project.organization_id:
+            raise ValidationError(
+                "Conversation organization must match project organization.",
+                code="organization_mismatch",
+            )
 
     def __str__(self) -> str:
         return f"{self.title} ({self.project.name})"
@@ -67,7 +80,7 @@ class ConversationMessage(TimeStampedModel):
 
     organization = models.ForeignKey(
         "organizations.Organization",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="conversation_messages",
         db_index=True,
         help_text="Tenant organization owning the message.",
@@ -79,13 +92,14 @@ class ConversationMessage(TimeStampedModel):
         db_index=True,
         help_text="Parent conversation containing this message.",
     )
-    sequence = models.PositiveIntegerField(
+    sequence = models.PositiveBigIntegerField(
         help_text="Deterministic 1-indexed order within the conversation.",
     )
     role = models.CharField(
         max_length=20,
         choices=MessageRole.choices,
         default=MessageRole.USER,
+        db_index=True,
         help_text="Author role tier.",
     )
     author = models.ForeignKey(
@@ -105,11 +119,10 @@ class ConversationMessage(TimeStampedModel):
         default=MessageFormat.MARKDOWN,
         help_text="Content serialization format.",
     )
-    client_message_id = models.CharField(
-        max_length=64,
+    client_message_id = models.UUIDField(
+        null=True,
         blank=True,
-        default="",
-        help_text="Client-supplied idempotency key.",
+        help_text="Client-supplied idempotency key (UUIDv4).",
     )
     metadata = models.JSONField(
         default=dict,
@@ -129,13 +142,24 @@ class ConversationMessage(TimeStampedModel):
             ),
             models.UniqueConstraint(
                 fields=["conversation", "client_message_id"],
-                condition=~models.Q(client_message_id=""),
+                condition=models.Q(client_message_id__isnull=False),
                 name="unique_conversation_client_message_id",
             ),
         ]
         indexes = [
-            models.Index(fields=["organization", "-created_at"]),
+            models.Index(
+                fields=["organization", "conversation", "sequence"],
+                name="conversatio_organiz_57f66a_idx",
+            ),
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        if self.conversation and self.organization_id != self.conversation.organization_id:
+            raise ValidationError(
+                "Message organization must match conversation organization.",
+                code="organization_mismatch",
+            )
+
     def __str__(self) -> str:
-        return f"Msg #{self.sequence} [{self.role}] on {self.conversation_id}"
+        return f"{self.conversation.title} #{self.sequence} ({self.role})"

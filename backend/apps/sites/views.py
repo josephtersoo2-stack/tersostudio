@@ -1,13 +1,16 @@
 """REST API ViewSets for WordPress Sites and Site Profile Snapshots."""
+import uuid
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Q
-from rest_framework import mixins, permissions, status, viewsets
+from django.http import Http404
+from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from apps.organizations.context import OrganizationContextMixin
-from apps.organizations.permissions import HasOrganizationWriteAccess
+from apps.organizations.permissions import HasOrganizationReadAccess, HasOrganizationWriteAccess
+from .enums import SiteProfileSource
 from .models import SiteProfileSnapshot, WordPressSite
 from .serializers import (
     SiteProfileSnapshotCreateSerializer,
@@ -18,11 +21,19 @@ from .services import create_site_profile_snapshot
 
 
 class WordPressSiteViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
-    """ViewSet for managing WordPress Site metadata."""
+    """ViewSet for managing WordPress Site metadata (List, Create, Retrieve, Patch, Archive/Unarchive).
+    Root DELETE and PUT return 405 Method Not Allowed.
+    """
 
-    permission_classes = [permissions.IsAuthenticated, HasOrganizationWriteAccess]
+    http_method_names = ["get", "post", "patch", "head", "options"]
     serializer_class = WordPressSiteSerializer
     lookup_field = "id"
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve", "profiles", "profile_detail"):
+            if self.request.method in permissions.SAFE_METHODS:
+                return [permissions.IsAuthenticated(), HasOrganizationReadAccess()]
+        return [permissions.IsAuthenticated(), HasOrganizationWriteAccess()]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False) or not self.request.user.is_authenticated:
@@ -35,15 +46,15 @@ class WordPressSiteViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
         if env:
             qs = qs.filter(environment=env.upper())
 
-        status_param = self.request.query_params.get("connection_status")
+        status_param = self.request.query_params.get("status")
         if status_param:
             qs = qs.filter(connection_status=status_param.upper())
 
-        is_archived = self.request.query_params.get("is_archived")
-        if is_archived is not None:
-            if is_archived.lower() in ("true", "1", "t"):
+        archived = self.request.query_params.get("archived")
+        if archived is not None:
+            if archived.lower() in ("true", "1", "t"):
                 qs = qs.filter(is_archived=True)
-            elif is_archived.lower() in ("false", "0", "f"):
+            elif archived.lower() in ("false", "0", "f"):
                 qs = qs.filter(is_archived=False)
 
         search = self.request.query_params.get("search")
@@ -68,8 +79,26 @@ class WordPressSiteViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
             updated_by=self.request.user,
         )
 
-    @action(detail=True, methods=["get", "post"], url_path="snapshots")
-    def snapshots(self, request, id=None):
+    @action(detail=True, methods=["post"])
+    def archive(self, request, id=None):
+        """Archive a WordPress site."""
+        site = self.get_object()
+        site.is_archived = True
+        site.updated_by = request.user
+        site.save(update_fields=["is_archived", "updated_by", "updated_at"])
+        return Response(self.get_serializer(site).data)
+
+    @action(detail=True, methods=["post"])
+    def unarchive(self, request, id=None):
+        """Unarchive a WordPress site."""
+        site = self.get_object()
+        site.is_archived = False
+        site.updated_by = request.user
+        site.save(update_fields=["is_archived", "updated_by", "updated_at"])
+        return Response(self.get_serializer(site).data)
+
+    @action(detail=True, methods=["get", "post"], url_path="profiles")
+    def profiles(self, request, id=None):
         """List snapshots or record a new snapshot for this specific WordPress site."""
         site = self.get_object()
 
@@ -89,7 +118,7 @@ class WordPressSiteViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
                     site=site,
                     actor=request.user,
                     payload=serializer.validated_data,
-                    source=serializer.validated_data.get("source", "MANUAL"),
+                    source=SiteProfileSource.MANUAL,
                 )
             except DjangoValidationError as exc:
                 raise ValidationError({"detail": exc.message}, code=getattr(exc, "code", "error"))
@@ -99,28 +128,23 @@ class WordPressSiteViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
                 status=status.HTTP_201_CREATED,
             )
 
+    @action(detail=True, methods=["get"], url_path="profiles/(?P<snapshot_id>[^/.]+)")
+    def profile_detail(self, request, id=None, snapshot_id=None):
+        """Retrieve a specific profile snapshot for this WordPress site."""
+        site = self.get_object()
 
-class SiteProfileSnapshotViewSet(
-    OrganizationContextMixin,
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    """Read-only viewset for inspecting recorded site profile snapshots across an organization."""
+        try:
+            parsed_snapshot_id = uuid.UUID(str(snapshot_id))
+        except (ValueError, TypeError):
+            raise Http404("Site profile snapshot not found.")
 
-    permission_classes = [permissions.IsAuthenticated, HasOrganizationWriteAccess]
-    serializer_class = SiteProfileSnapshotSerializer
-    lookup_field = "id"
+        snapshot = SiteProfileSnapshot.objects.filter(
+            id=parsed_snapshot_id,
+            site=site,
+            organization=self.get_organization(),
+        ).first()
 
-    def get_queryset(self):
-        if getattr(self, "swagger_fake_view", False) or not self.request.user.is_authenticated:
-            return SiteProfileSnapshot.objects.none()
+        if not snapshot:
+            raise Http404("Site profile snapshot not found.")
 
-        org = self.get_organization()
-        qs = SiteProfileSnapshot.objects.select_related("site", "organization").filter(organization=org)
-
-        site_id = self.request.query_params.get("site_id")
-        if site_id:
-            qs = qs.filter(site_id=site_id)
-
-        return qs.order_by("-created_at")
+        return Response(SiteProfileSnapshotSerializer(snapshot).data)

@@ -5,7 +5,7 @@ from apps.core.validators import (
     normalize_wordpress_url,
     validate_safe_json_object,
 )
-from .enums import SiteConnectionStatus, SiteEnvironment, SiteProfileSource
+from .enums import SiteProfileSource
 from .models import SiteProfileSnapshot, WordPressSite
 
 
@@ -46,19 +46,36 @@ class SiteProfileSnapshotCreateSerializer(serializers.Serializer):
     """Payload serializer for submitting a new site profile snapshot."""
 
     source = serializers.ChoiceField(
-        choices=SiteProfileSource.choices,
+        choices=[SiteProfileSource.MANUAL],
         default=SiteProfileSource.MANUAL,
+        required=False,
     )
-    wordpress_version = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
-    php_version = serializers.CharField(max_length=50, required=False, allow_blank=True, default="")
+    wordpress_version = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
+    php_version = serializers.CharField(max_length=20, required=False, allow_blank=True, default="")
     multisite = serializers.BooleanField(required=False, default=False)
-    locale = serializers.CharField(max_length=50, required=False, default="en_US")
-    timezone = serializers.CharField(max_length=100, required=False, default="UTC")
+    locale = serializers.CharField(max_length=32, required=False, default="en_US")
+    timezone = serializers.CharField(max_length=64, required=False, default="UTC")
     active_theme = serializers.JSONField(required=False, default=dict)
     active_plugins = serializers.ListField(required=False, default=list)
     server = serializers.JSONField(required=False, default=dict)
     capabilities = serializers.JSONField(required=False, default=dict)
     health = serializers.JSONField(required=False, default=dict)
+
+    def validate_active_theme(self, value):
+        validate_safe_json_object(value)
+        return value
+
+    def validate_server(self, value):
+        validate_safe_json_object(value)
+        return value
+
+    def validate_capabilities(self, value):
+        validate_safe_json_object(value)
+        return value
+
+    def validate_health(self, value):
+        validate_safe_json_object(value)
+        return value
 
     def validate(self, attrs):
         forbidden_key = find_forbidden_json_key(attrs)

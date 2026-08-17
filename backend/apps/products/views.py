@@ -1,20 +1,30 @@
 """Views for WordPress Products domain."""
 from django.db.models import Q
-from rest_framework import permissions, status, viewsets
-from rest_framework.response import Response
+from rest_framework import mixins, permissions, viewsets
 
 from apps.organizations.context import OrganizationContextMixin
-from apps.organizations.permissions import HasOrganizationWriteAccess
+from apps.organizations.permissions import HasOrganizationReadAccess, HasOrganizationWriteAccess
 from .models import WordPressProduct
 from .serializers import WordPressProductSerializer
 
 
-class WordPressProductViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
-    """ViewSet for managing tenant-scoped WordPress Products and targets."""
+class WordPressProductViewSet(
+    OrganizationContextMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """ViewSet for managing tenant-scoped WordPress Products and targets (List, Retrieve, Patch)."""
 
-    permission_classes = [permissions.IsAuthenticated, HasOrganizationWriteAccess]
-    serializer_class = WordPressProductSerializer
+    http_method_names = ["get", "patch", "head", "options"]
     lookup_field = "id"
+    serializer_class = WordPressProductSerializer
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [permissions.IsAuthenticated(), HasOrganizationReadAccess()]
+        return [permissions.IsAuthenticated(), HasOrganizationWriteAccess()]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False) or not self.request.user.is_authenticated:
@@ -27,11 +37,11 @@ class WordPressProductViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
         if kind:
             qs = qs.filter(kind=kind.upper())
 
-        is_archived = self.request.query_params.get("is_archived")
-        if is_archived is not None:
-            if is_archived.lower() in ("true", "1", "t"):
+        archived = self.request.query_params.get("archived")
+        if archived is not None:
+            if archived.lower() in ("true", "1", "t"):
                 qs = qs.filter(is_archived=True)
-            elif is_archived.lower() in ("false", "0", "f"):
+            elif archived.lower() in ("false", "0", "f"):
                 qs = qs.filter(is_archived=False)
 
         search = self.request.query_params.get("search")
@@ -44,8 +54,3 @@ class WordPressProductViewSet(OrganizationContextMixin, viewsets.ModelViewSet):
             )
 
         return qs.order_by("-created_at")
-
-    def perform_create(self, serializer):
-        serializer.save(
-            organization=self.get_organization(),
-        )

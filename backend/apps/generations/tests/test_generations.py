@@ -1,5 +1,6 @@
 """Tests for the Generations domain (models, steps, agent runs, and CRUD APIs)."""
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
@@ -46,7 +47,12 @@ class GenerationDomainTests(TestCase):
             "prompt": "Create an appointment booking plugin with Google Calendar integration.",
             "metadata": {"preferred_php": "8.3"},
         }
-        response = self.client.post("/api/v1/generations/", payload, format="json")
+        response = self.client.post(
+            "/api/v1/generations/",
+            payload,
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         gen_id = response.data["id"]
@@ -102,67 +108,239 @@ class GenerationDomainTests(TestCase):
         run1 = AgentRun.objects.create(
             step=step,
             run_number=1,
-            prompt="Generate initial PHP code.",
+            runtime_type="openhands",
+            session_id="oh-sess-001",
+            remote_conversation_id="3fa85f64-5717-4562-b3fc-2c963f66afa6",
             status=AgentRunStatus.FAILED,
+            model_name="anthropic/claude-sonnet-4-5-20250929",
+            prompt="Generate custom post type registration.",
             failure_category="MODEL_ERROR",
+            error_details={"exception": "Rate limit exceeded"},
         )
 
         # Attempt 2: Successful retry run
         run2 = AgentRun.objects.create(
             step=step,
             run_number=2,
-            prompt="Retry generating PHP code with repaired prompts.",
+            runtime_type="openhands",
+            session_id="oh-sess-002",
+            remote_conversation_id="7ba95f64-5717-4562-b3fc-2c963f66afa7",
             status=AgentRunStatus.COMPLETED,
-            output="Generated complete working code.",
+            model_name="anthropic/claude-sonnet-4-5-20250929",
+            prompt="Generate custom post type registration.",
+            output="<?php register_post_type('membership_level', ...);",
+            token_usage={"total_tokens": 1250},
         )
 
         runs = step.runs.all()
         self.assertEqual(len(runs), 2)
         self.assertEqual(runs[0], run1)
         self.assertEqual(runs[1], run2)
-        self.assertEqual(runs[1].run_number, 2)
+        self.assertEqual(runs[0].session_id, "oh-sess-001")
+        self.assertEqual(runs[1].session_id, "oh-sess-002")
 
-    def test_generation_detail_api_nested_representation(self):
-        """Verify GET /api/v1/generations/{id}/ returns fully nested steps, workspace, and artifacts."""
-        step = GenerationStep.objects.create(
-            generation=self.generation,
-            step_number=1,
-            name="Specification",
-            agent_role="feature_discovery",
-            status=StepStatus.COMPLETED,
-        )
-        AgentRun.objects.create(
-            step=step,
-            run_number=1,
-            status=AgentRunStatus.COMPLETED,
-            output="Completed specification.",
-        )
+    def test_generation_detail_serializer_structure(self):
+        """Verify detail view returns nested steps, workspace, and artifacts."""
         Workspace.objects.create(
             generation=self.generation,
             workspace_path=f"workspaces/{self.generation.id}",
         )
-        Artifact.objects.create(
+        step = GenerationStep.objects.create(
             generation=self.generation,
-            name="spec.md",
-            file_path="docs/spec.md",
-            artifact_type=ArtifactType.DOCUMENTATION,
-            storage_key=f"artifacts/{self.generation.id}/spec.md",
+            step_number=1,
+            name="Architecture",
+            agent_role="architect",
+        )
+        AgentRun.objects.create(
+            step=step,
+            run_number=1,
+            session_id="oh-sess-test",
+            status=AgentRunStatus.COMPLETED,
+            prompt="Design database schema.",
         )
 
         self.client.force_authenticate(user=self.user)
-        response = self.client.get(f"/api/v1/generations/{self.generation.id}/")
+        response = self.client.get(
+            f"/api/v1/generations/{self.generation.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        data = response.data
-        self.assertEqual(data["id"], str(self.generation.id))
-        self.assertEqual(len(data["steps"]), 1)
-        self.assertEqual(len(data["steps"][0]["runs"]), 1)
-        self.assertIsNotNone(data["workspace"])
-        self.assertEqual(len(data["artifacts"]), 1)
-        self.assertEqual(data["artifacts"][0]["name"], "spec.md")
+        self.assertEqual(response.data["id"], str(self.generation.id))
+        self.assertIn("steps", response.data)
+        self.assertEqual(len(response.data["steps"]), 1)
+        self.assertEqual(len(response.data["steps"][0]["runs"]), 1)
+        self.assertIsNotNone(response.data["workspace"])
+        self.assertIn("artifacts", response.data)
 
-    def test_delete_generation_returns_405_method_not_allowed(self):
-        """Verify DELETE /api/v1/generations/{id}/ is disallowed (durable retention)."""
+    def test_generation_cannot_be_deleted_via_api(self):
+        """Verify public API disallows destructive DELETE on Generation records (HTTP 405)."""
         self.client.force_authenticate(user=self.user)
-        response = self.client.delete(f"/api/v1/generations/{self.generation.id}/")
+        response = self.client.delete(
+            f"/api/v1/generations/{self.generation.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertTrue(Generation.objects.filter(id=self.generation.id).exists())
+
+    def test_generation_ownership_cannot_diverge_from_project_owner(self):
+        """Verify Generation organization is strictly derived from / matched to Project organization."""
+        other_user = User.objects.create_user(
+            email="impostor@tersuite.com",
+            password="StrongPassword123!",
+        )
+        other_org = ensure_personal_organization(other_user)
+
+        # Attempt creating generation setting organization to other_org on project owned by self.org
+        gen = Generation(
+            organization=other_org,
+            project=self.project,
+            created_by=other_user,
+            prompt="Attempting to hijack ownership.",
+        )
+        with self.assertRaises((ValidationError, ValueError)):
+            gen.save()
+
+    def test_generation_steps_are_read_only_via_api(self):
+        """Verify clients cannot create, update, or delete GenerationSteps via public API."""
+        step = GenerationStep.objects.create(
+            generation=self.generation,
+            step_number=1,
+            name="Architecture",
+            agent_role="architect",
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        # POST
+        post_resp = self.client.post(
+            "/api/v1/steps/",
+            {"name": "Fabricated Step"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # PATCH
+        patch_resp = self.client.patch(
+            f"/api/v1/steps/{step.id}/",
+            {"name": "Tampered"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # DELETE
+        del_resp = self.client.delete(
+            f"/api/v1/steps/{step.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+        self.assertEqual(del_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_agent_runs_are_read_only_via_api(self):
+        """Verify clients cannot create, update, or delete AgentRuns via public API."""
+        step = GenerationStep.objects.create(
+            generation=self.generation,
+            step_number=1,
+            name="Architecture",
+            agent_role="architect",
+        )
+        run = AgentRun.objects.create(
+            step=step,
+            run_number=1,
+            prompt="Run prompt",
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        # POST
+        post_resp = self.client.post(
+            "/api/v1/runs/",
+            {"prompt": "Fabricated Run"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+        self.assertEqual(post_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # PATCH
+        patch_resp = self.client.patch(
+            f"/api/v1/runs/{run.id}/",
+            {"output": "Fake output"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+        # DELETE
+        del_resp = self.client.delete(
+            f"/api/v1/runs/{run.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
+        self.assertEqual(del_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_workspaces_and_artifacts_are_read_only_via_api(self):
+        """Verify clients cannot POST, PATCH, or DELETE Workspaces and Artifacts."""
+        workspace = Workspace.objects.create(
+            generation=self.generation,
+            workspace_path=f"workspaces/{self.generation.id}",
+        )
+        artifact = Artifact.objects.create(
+            generation=self.generation,
+            name="plugin.php",
+            file_path="plugin.php",
+            artifact_type=ArtifactType.SOURCE_CODE,
+            storage_key="test-key",
+        )
+
+        self.client.force_authenticate(user=self.user)
+
+        # Workspace mutations disallowed
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/workspaces/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.patch(
+                f"/api/v1/workspaces/{workspace.id}/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.delete(
+                f"/api/v1/workspaces/{workspace.id}/",
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+
+        # Artifact mutations disallowed
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/artifacts/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.patch(
+                f"/api/v1/artifacts/{artifact.id}/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )
+        self.assertEqual(
+            self.client.delete(
+                f"/api/v1/artifacts/{artifact.id}/",
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
+            status.HTTP_405_METHOD_NOT_ALLOWED,
+        )

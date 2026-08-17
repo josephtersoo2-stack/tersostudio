@@ -45,16 +45,8 @@ def _build_runtime():
     return MockAgentRuntime()
 
 
-get_agent_runtime = _build_runtime
-
-
 class ExecutionService:
     """Creates AgentRuns and executes them against the configured runtime."""
-
-    @staticmethod
-    def execute_agent_run(agent_run_id: str) -> AgentRun:
-        return ExecutionService.run(agent_run_id)
-
 
     @staticmethod
     @transaction.atomic

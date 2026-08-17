@@ -48,14 +48,14 @@ class TestProjectSitesAPI:
         assert len(list_resp.json()) == 1
 
     def test_detach_site_from_project(self):
-        ProjectService.add_site_to_project(
+        link = ProjectService.add_site_to_project(
             project=self.project,
             site=self.site,
             actor=self.user,
             purpose="DEVELOPMENT",
         )
 
-        del_resp = self.client.delete(f"/api/v1/projects/{self.project.id}/sites/{self.site.id}/")
+        del_resp = self.client.delete(f"/api/v1/projects/{self.project.id}/sites/{link.id}/")
         assert del_resp.status_code == status.HTTP_204_NO_CONTENT
 
         list_resp = self.client.get(f"/api/v1/projects/{self.project.id}/sites/")

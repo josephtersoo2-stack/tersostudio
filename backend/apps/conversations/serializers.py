@@ -1,7 +1,7 @@
 """Serializers for Conversations and Messages."""
 from rest_framework import serializers
 from apps.core.validators import validate_safe_json_object
-from .enums import ConversationPurpose, ConversationStatus, MessageFormat, MessageRole
+from .enums import MessageFormat, MessageRole
 from .models import Conversation, ConversationMessage
 
 
@@ -36,16 +36,25 @@ class ConversationMessageSerializer(serializers.ModelSerializer):
 class ConversationMessageCreateSerializer(serializers.Serializer):
     """Payload serializer for posting a new user message to a conversation."""
 
-    content = serializers.CharField()
-    client_message_id = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
+    content = serializers.CharField(min_length=1, max_length=100000)
+    client_message_id = serializers.UUIDField(required=False, allow_null=True, default=None)
+    role = serializers.CharField(required=False, default=MessageRole.USER)
     content_format = serializers.ChoiceField(
         choices=MessageFormat.choices,
         default=MessageFormat.MARKDOWN,
     )
     metadata = serializers.JSONField(required=False, default=dict)
 
+    def validate_role(self, value):
+        if value and value.strip().upper() != MessageRole.USER:
+            raise serializers.ValidationError(
+                "Only USER role messages can be submitted publicly.",
+                code="message_role_not_allowed",
+            )
+        return MessageRole.USER
+
     def validate_metadata(self, value):
-        validate_safe_json_object(value)
+        validate_safe_json_object(value, max_bytes=16384)
         return value
 
 

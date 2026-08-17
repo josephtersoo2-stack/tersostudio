@@ -70,11 +70,22 @@ class TestConversationMessagesAPI:
         assert Generation.objects.count() == gen_count_before
         assert AgentRun.objects.count() == run_count_before
 
-    def test_messages_viewset_is_read_only(self):
-        # Global messages endpoint supports GET
-        resp = self.client.get("/api/v1/conversations/messages/")
-        assert resp.status_code == status.HTTP_200_OK
+    def test_messages_immutability(self):
+        # Create a message
+        post_resp = self.client.post(
+            f"/api/v1/conversations/{self.conv.id}/messages/",
+            {"content": "Immutable message"},
+            format="json",
+        )
+        msg_id = post_resp.json()["id"]
 
-        # POST / PUT / PATCH / DELETE on messages endpoint return 405 Method Not Allowed
-        post_resp = self.client.post("/api/v1/conversations/messages/", {"content": "Direct"}, format="json")
-        assert post_resp.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+        # Detail retrieval works
+        get_resp = self.client.get(f"/api/v1/conversations/{self.conv.id}/messages/{msg_id}/")
+        assert get_resp.status_code == status.HTTP_200_OK
+
+        # PATCH / PUT / DELETE on message detail return 405 Method Not Allowed
+        patch_resp = self.client.patch(f"/api/v1/conversations/{self.conv.id}/messages/{msg_id}/", {"content": "Tampered"}, format="json")
+        assert patch_resp.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+        del_resp = self.client.delete(f"/api/v1/conversations/{self.conv.id}/messages/{msg_id}/")
+        assert del_resp.status_code == status.HTTP_405_METHOD_NOT_ALLOWED

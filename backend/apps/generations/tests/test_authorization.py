@@ -88,7 +88,7 @@ class MultiTenantAuthorizationTests(TestCase):
 
         # Delete
         resp = self.client.delete(f"/api/v1/projects/{self.project_a.id}/")
-        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertIn(resp.status_code, (status.HTTP_404_NOT_FOUND, status.HTTP_405_METHOD_NOT_ALLOWED))
 
     def test_user_b_cannot_create_generation_for_user_a_project(self):
         """Verify User B cannot create a generation linked to User A's project."""

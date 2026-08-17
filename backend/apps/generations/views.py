@@ -97,10 +97,15 @@ class GenerationViewSet(
         except InvalidStateTransitionError as exc:
             return Response(
                 {
-                    "error": "invalid_state_transition",
-                    "detail": str(exc),
-                    "current_status": exc.current_status,
-                    "target_status": exc.target_status,
+                    "error": {
+                        "code": "invalid_state_transition",
+                        "message": str(exc),
+                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "details": {
+                            "current_status": exc.current_status,
+                            "target_status": exc.target_status,
+                        },
+                    }
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -119,7 +124,14 @@ class GenerationViewSet(
             return Response(GenerationDetailSerializer(updated_gen, context={"request": request}).data)
         except InvalidStateTransitionError as exc:
             return Response(
-                {"error": "invalid_state_transition", "detail": str(exc)},
+                {
+                    "error": {
+                        "code": "invalid_state_transition",
+                        "message": str(exc),
+                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "details": {},
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -137,7 +149,14 @@ class GenerationViewSet(
             return Response(GenerationDetailSerializer(updated_gen, context={"request": request}).data)
         except InvalidStateTransitionError as exc:
             return Response(
-                {"error": "invalid_state_transition", "detail": str(exc)},
+                {
+                    "error": {
+                        "code": "invalid_state_transition",
+                        "message": str(exc),
+                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "details": {},
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -155,7 +174,14 @@ class GenerationViewSet(
             return Response(GenerationDetailSerializer(updated_gen, context={"request": request}).data)
         except InvalidStateTransitionError as exc:
             return Response(
-                {"error": "invalid_state_transition", "detail": str(exc)},
+                {
+                    "error": {
+                        "code": "invalid_state_transition",
+                        "message": str(exc),
+                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "details": {},
+                    }
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

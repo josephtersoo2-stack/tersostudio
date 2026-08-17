@@ -1,5 +1,6 @@
 """Projects data models for organizing WordPress plugin generations."""
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils.text import slugify
 
@@ -72,6 +73,15 @@ class Project(OrganizationOwnedModel):
             )
         ]
 
+    def clean(self) -> None:
+        super().clean()
+        if hasattr(self, "product") and self.product:
+            if self.product.organization_id != self.organization_id:
+                raise ValidationError(
+                    "Product organization must match project organization.",
+                    code="organization_mismatch",
+                )
+
     def __str__(self) -> str:
         return f"{self.name} ({self.slug})"
 
@@ -115,13 +125,12 @@ class Project(OrganizationOwnedModel):
         super().save(*args, **kwargs)
 
 
-
 class ProjectSite(TimeStampedModel):
     """Associates a WordPress site with a project for staging, development, or testing."""
 
     organization = models.ForeignKey(
         "organizations.Organization",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="project_sites",
         db_index=True,
         help_text="Tenant organization owning this association.",
@@ -129,21 +138,21 @@ class ProjectSite(TimeStampedModel):
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
-        related_name="project_sites",
+        related_name="site_links",
         db_index=True,
         help_text="Project linked to the site.",
     )
     site = models.ForeignKey(
         "sites.WordPressSite",
         on_delete=models.CASCADE,
-        related_name="project_associations",
+        related_name="project_links",
         db_index=True,
         help_text="WordPress site attached to the project.",
     )
     purpose = models.CharField(
         max_length=20,
         choices=ProjectSitePurpose.choices,
-        default=ProjectSitePurpose.DEVELOPMENT,
+        default=ProjectSitePurpose.PRIMARY,
         help_text="Role or environment purpose of this site attachment.",
     )
     created_by = models.ForeignKey(
@@ -166,8 +175,16 @@ class ProjectSite(TimeStampedModel):
             )
         ]
         indexes = [
-            models.Index(fields=["organization", "-created_at"]),
+            models.Index(fields=["organization", "purpose"], name="projects_pr_organiz_9c45ea_idx"),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.organization_id != self.project.organization_id or self.organization_id != self.site.organization_id:
+            raise ValidationError(
+                "Organization mismatch among project site link, project, and site.",
+                code="organization_mismatch",
+            )
 
     def __str__(self) -> str:
         return f"{self.project.name} <-> {self.site.name} ({self.purpose})"

@@ -36,22 +36,32 @@ class TestSiteProfilesAPI:
             "active_plugins": [{"slug": "contact-form-7", "version": "5.9"}],
         }
 
-        resp = self.client.post(f"/api/v1/sites/{self.site.id}/snapshots/", payload, format="json")
+        resp = self.client.post(f"/api/v1/sites/{self.site.id}/profiles/", payload, format="json")
         assert resp.status_code == status.HTTP_201_CREATED
         data = resp.json()
         assert data["version"] == 1
         assert data["wordpress_version"] == "6.7"
         assert len(data["checksum_sha256"]) == 64
 
-        list_resp = self.client.get(f"/api/v1/sites/{self.site.id}/snapshots/")
+        list_resp = self.client.get(f"/api/v1/sites/{self.site.id}/profiles/")
         assert list_resp.status_code == status.HTTP_200_OK
         assert len(list_resp.json()) == 1
 
-    def test_snapshot_viewset_is_read_only(self):
-        # Global snapshots endpoint supports GET
-        resp = self.client.get("/api/v1/sites/snapshots/")
-        assert resp.status_code == status.HTTP_200_OK
+        detail_resp = self.client.get(f"/api/v1/sites/{self.site.id}/profiles/{data['id']}/")
+        assert detail_resp.status_code == status.HTTP_200_OK
+        assert detail_resp.json()["id"] == data["id"]
 
-        # POST / PUT / PATCH / DELETE on snapshots viewset return 405 Method Not Allowed
-        post_resp = self.client.post("/api/v1/sites/snapshots/", {"wordpress_version": "6.7"}, format="json")
-        assert post_resp.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+    def test_snapshot_mutations_disallowed(self):
+        # PATCH / PUT / DELETE on snapshot detail return 405 Method Not Allowed
+        payload = {
+            "wordpress_version": "6.7",
+            "php_version": "8.3",
+        }
+        create_resp = self.client.post(f"/api/v1/sites/{self.site.id}/profiles/", payload, format="json")
+        snap_id = create_resp.json()["id"]
+
+        patch_resp = self.client.patch(f"/api/v1/sites/{self.site.id}/profiles/{snap_id}/", {"wordpress_version": "6.8"}, format="json")
+        assert patch_resp.status_code == status.HTTP_405_METHOD_NOT_ALLOWED
+
+        del_resp = self.client.delete(f"/api/v1/sites/{self.site.id}/profiles/{snap_id}/")
+        assert del_resp.status_code == status.HTTP_405_METHOD_NOT_ALLOWED

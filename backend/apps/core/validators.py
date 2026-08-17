@@ -63,23 +63,25 @@ def validate_safe_json_object(value, max_bytes: int = 32768) -> None:
         return
 
     if not isinstance(value, dict):
-        raise ValidationError("Metadata must be a valid JSON object/dictionary.")
+        raise ValidationError("Metadata must be a valid JSON object/dictionary.", code="invalid_json_object")
 
     forbidden_key = find_forbidden_json_key(value)
     if forbidden_key:
         raise ValidationError(
-            f"Forbidden secret key '{forbidden_key}' detected in metadata payload. Credentials must not be stored in metadata."
+            f"Forbidden secret key '{forbidden_key}' detected in metadata payload. Credentials must not be stored in metadata.",
+            code="forbidden_secret_key",
         )
 
     try:
         serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
     except (TypeError, ValueError) as exc:
-        raise ValidationError(f"Metadata is not valid serializable JSON: {exc}") from exc
+        raise ValidationError("Metadata is not valid serializable JSON.", code="invalid_json_serialization") from exc
 
     byte_len = len(serialized.encode("utf-8"))
     if byte_len > max_bytes:
         raise ValidationError(
-            f"Metadata payload size ({byte_len} bytes) exceeds the maximum allowed limit of {max_bytes} bytes."
+            f"Metadata payload size ({byte_len} bytes) exceeds the maximum allowed limit of {max_bytes} bytes.",
+            code="metadata_size_exceeded",
         )
 
 
@@ -96,33 +98,47 @@ def normalize_wordpress_url(url: str) -> str:
     - Rejects non-empty query strings for site identity URLs
     """
     if not url or not isinstance(url, str):
-        raise ValidationError("A valid site URL string is required.")
+        raise ValidationError("A valid site URL string is required.", code="invalid_url")
 
     url_clean = url.strip()
-    parsed = urlparse(url_clean)
+    try:
+        parsed = urlparse(url_clean)
+    except Exception as exc:
+        raise ValidationError("Invalid site URL format.", code="invalid_url") from exc
 
-    if parsed.scheme.lower() not in ("http", "https"):
-        raise ValidationError(f"URL scheme '{parsed.scheme}' is not supported. Must be 'http' or 'https'.")
+    if not parsed.scheme or parsed.scheme.lower() not in ("http", "https"):
+        raise ValidationError(f"URL scheme '{parsed.scheme}' is not supported. Must be 'http' or 'https'.", code="invalid_url_scheme")
 
     if not parsed.netloc:
-        raise ValidationError("URL must contain a valid hostname.")
+        raise ValidationError("URL must contain a valid hostname.", code="invalid_url_host")
 
-    if parsed.username or parsed.password:
-        raise ValidationError("URLs containing embedded username or password credentials are strictly prohibited.")
+    try:
+        if parsed.username or parsed.password:
+            raise ValidationError("URLs containing embedded username or password credentials are strictly prohibited.", code="invalid_url_credentials")
+    except ValueError as exc:
+        raise ValidationError("Invalid site URL: contains malformed credentials or userinfo.", code="invalid_url_credentials") from exc
 
     if parsed.query:
-        raise ValidationError("Site URLs must not contain query parameters.")
+        raise ValidationError("Site URLs must not contain query parameters.", code="invalid_url_query")
 
     if parsed.fragment:
         # Fragments are stripped per specification
         pass
 
     scheme = parsed.scheme.lower()
-    hostname = parsed.hostname.lower() if parsed.hostname else ""
-    if not hostname:
-        raise ValidationError("URL contains an invalid hostname.")
+    try:
+        hostname = parsed.hostname.lower() if parsed.hostname else ""
+    except ValueError as exc:
+        raise ValidationError("URL contains an invalid or malformed hostname.", code="invalid_url_host") from exc
 
-    port = parsed.port
+    if not hostname:
+        raise ValidationError("URL contains an invalid hostname.", code="invalid_url_host")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValidationError("URL contains an invalid or malformed port number.", code="invalid_url_port") from exc
+
     if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
         netloc = hostname
     elif port:

@@ -1,8 +1,13 @@
 """Data models for WordPress Sites and Site Profile Snapshots."""
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from apps.core.models import OrganizationOwnedModel, TimeStampedModel
-from apps.core.validators import validate_safe_json_object
+from apps.core.validators import (
+    find_forbidden_json_key,
+    normalize_wordpress_url,
+    validate_safe_json_object,
+)
 from .enums import SiteConnectionStatus, SiteEnvironment, SiteProfileSource
 
 
@@ -13,14 +18,15 @@ class WordPressSite(OrganizationOwnedModel):
         max_length=255,
         help_text="Human-readable label for the WordPress site.",
     )
-    url = models.CharField(
-        max_length=512,
+    url = models.URLField(
+        max_length=2048,
         help_text="Canonical normalized WordPress site root URL.",
     )
     environment = models.CharField(
         max_length=20,
         choices=SiteEnvironment.choices,
-        default=SiteEnvironment.DEVELOPMENT,
+        default=SiteEnvironment.PRODUCTION,
+        db_index=True,
         help_text="Environment deployment classification.",
     )
     connection_status = models.CharField(
@@ -55,12 +61,23 @@ class WordPressSite(OrganizationOwnedModel):
         verbose_name = "WordPress Site"
         verbose_name_plural = "WordPress Sites"
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["organization", "environment", "is_archived"],
+                name="sites_wordp_organiz_6f2e82_idx",
+            ),
+        ]
         constraints = [
             models.UniqueConstraint(
                 fields=["organization", "url"],
                 name="unique_org_site_url",
             )
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.url:
+            self.url = normalize_wordpress_url(self.url)
 
     def __str__(self) -> str:
         return f"{self.name} ({self.url})"
@@ -71,7 +88,7 @@ class SiteProfileSnapshot(TimeStampedModel):
 
     organization = models.ForeignKey(
         "organizations.Organization",
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="site_profile_snapshots",
         db_index=True,
         help_text="Tenant organization owning the snapshot.",
@@ -90,16 +107,17 @@ class SiteProfileSnapshot(TimeStampedModel):
         max_length=20,
         choices=SiteProfileSource.choices,
         default=SiteProfileSource.MANUAL,
+        db_index=True,
         help_text="Origin source of snapshot capture.",
     )
     wordpress_version = models.CharField(
-        max_length=50,
+        max_length=20,
         blank=True,
         default="",
         help_text="Detected WordPress core version.",
     )
     php_version = models.CharField(
-        max_length=50,
+        max_length=20,
         blank=True,
         default="",
         help_text="Detected PHP runtime version.",
@@ -109,12 +127,12 @@ class SiteProfileSnapshot(TimeStampedModel):
         help_text="Whether WordPress multisite network is enabled.",
     )
     locale = models.CharField(
-        max_length=50,
+        max_length=32,
         default="en_US",
         help_text="WordPress site locale setting.",
     )
     timezone = models.CharField(
-        max_length=100,
+        max_length=64,
         default="UTC",
         help_text="WordPress configured timezone.",
     )
@@ -173,8 +191,23 @@ class SiteProfileSnapshot(TimeStampedModel):
             )
         ]
         indexes = [
-            models.Index(fields=["organization", "-created_at"]),
+            models.Index(fields=["organization", "-created_at"], name="sites_sitep_organiz_a43e81_idx"),
         ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.site and self.organization_id != self.site.organization_id:
+            raise ValidationError(
+                "Snapshot organization must match site organization.",
+                code="organization_mismatch",
+            )
+        if self.active_plugins:
+            forbidden = find_forbidden_json_key(self.active_plugins)
+            if forbidden:
+                raise ValidationError(
+                    f"Forbidden secret key '{forbidden}' detected in active_plugins.",
+                    code="forbidden_secret_key",
+                )
 
     def __str__(self) -> str:
         return f"{self.site.name} - Snapshot v{self.version}"

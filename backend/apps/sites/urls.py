@@ -1,10 +1,9 @@
 """URL routes for WordPress Sites domain."""
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
-from .views import SiteProfileSnapshotViewSet, WordPressSiteViewSet
+from .views import WordPressSiteViewSet
 
 router = DefaultRouter()
-router.register("snapshots", SiteProfileSnapshotViewSet, basename="site-snapshot")
 router.register("", WordPressSiteViewSet, basename="site")
 
 urlpatterns = [

@@ -24,6 +24,22 @@ class OpenHandsAdapterTests(unittest.TestCase):
     """Test suite verifying OpenHands adapter official SDK lifecycle and error semantics."""
 
     def setUp(self):
+        self.sdk_patcher = patch("runtime.adapters.openhands.adapter.OPENHANDS_SDK_AVAILABLE", True)
+        self.sdk_patcher.start()
+        self.addCleanup(self.sdk_patcher.stop)
+
+        self.llm_patcher = patch("runtime.adapters.openhands.adapter.OpenHandsLLM")
+        self.mock_llm_cls = self.llm_patcher.start()
+        self.addCleanup(self.llm_patcher.stop)
+
+        self.agent_patcher = patch("runtime.adapters.openhands.adapter.OpenHandsAgent")
+        self.mock_agent_cls = self.agent_patcher.start()
+        self.addCleanup(self.agent_patcher.stop)
+
+        self.ws_patcher = patch("runtime.adapters.openhands.adapter.OpenHandsRemoteWorkspace")
+        self.mock_ws_cls = self.ws_patcher.start()
+        self.addCleanup(self.ws_patcher.stop)
+
         self.config = OpenHandsServerConfig(
             server_url="http://mock-openhands-server:8010",
             server_api_key="test-api-key-xyz",

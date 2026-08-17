@@ -1,5 +1,6 @@
 """Data models for Generations, Generation Steps, Agent Runs, Workspaces, and Artifacts."""
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from apps.core.models import OrganizationOwnedModel, TimeStampedModel
 from apps.projects.models import Project
@@ -18,10 +19,6 @@ class GenerationQuerySet(models.QuerySet):
     def for_organization(self, organization):
         """Filter generations owned by a specific organization."""
         return self.filter(organization=organization)
-
-    def for_user(self, user):
-        """Filter generations created by a specific user."""
-        return self.filter(created_by=user)
 
     def active(self):
         """Filter ongoing generations."""
@@ -121,13 +118,27 @@ class Generation(OrganizationOwnedModel):
     def __str__(self) -> str:
         return f"Generation {self.id} [{self.status}] for Project {self.project.name}"
 
+    def clean(self) -> None:
+        super().clean()
+        if self.project_id:
+            if not self.organization_id:
+                self.organization = self.project.organization
+            elif self.organization_id != self.project.organization_id:
+                raise ValidationError(
+                    "Generation organization must match project organization.",
+                    code="organization_mismatch",
+                )
+
     def save(self, *args, **kwargs):
         """Validate organization matches project organization."""
         if self.project_id:
             if not self.organization_id:
                 self.organization = self.project.organization
             elif self.organization_id != self.project.organization_id:
-                raise ValueError("Generation organization must match project organization.")
+                raise ValidationError(
+                    "Generation organization must match project organization.",
+                    code="organization_mismatch",
+                )
         super().save(*args, **kwargs)
 
 

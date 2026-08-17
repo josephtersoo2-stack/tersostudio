@@ -2,6 +2,8 @@
 from django.db import migrations
 from django.utils.text import slugify
 
+MIGRATION_MARKER = {"migration": {"source": "organizations.0002_backfill_personal_organizations"}}
+
 
 def backfill_personal_organizations(apps, schema_editor):
     User = apps.get_model("accounts", "User")
@@ -35,6 +37,7 @@ def backfill_personal_organizations(apps, schema_editor):
                 slug=final_slug,
                 is_personal=True,
                 is_active=True,
+                metadata=MIGRATION_MARKER,
                 created_by=user,
                 updated_by=user,
             )
@@ -56,8 +59,24 @@ def backfill_personal_organizations(apps, schema_editor):
 
 def reverse_personal_organizations(apps, schema_editor):
     Organization = apps.get_model("organizations", "Organization")
-    # Soft deletion / cleanup of personal organizations created during backfill
-    Organization.objects.filter(is_personal=True).delete()
+    # Delete ONLY personal organizations created by this migration carrying the exact marker
+    marked_ids = []
+    for org in Organization.objects.filter(is_personal=True):
+        meta = org.metadata or {}
+        if isinstance(meta, dict) and meta.get("migration", {}).get("source") == "organizations.0002_backfill_personal_organizations":
+            marked_ids.append(org.id)
+
+    if marked_ids:
+        # Delete memberships first, then organizations using SQL cursor to avoid cascade queries on unapplied tables
+        with schema_editor.connection.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM organizations_organizationmembership WHERE organization_id = ANY(%s::uuid[])",
+                [marked_ids],
+            )
+            cursor.execute(
+                "DELETE FROM organizations_organization WHERE id = ANY(%s::uuid[])",
+                [marked_ids],
+            )
 
 
 class Migration(migrations.Migration):
