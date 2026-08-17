@@ -47,11 +47,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - AGENT_RUNTIME_BACKEND=openhands
-      - OPENHANDS_AGENT_SERVER_URL=http://localhost:8010
-      - OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS=120
-      - OPENHANDS_AGENT_SERVER_VERIFY_SSL=True
-      - LLM_DEFAULT_MODEL=anthropic/claude-sonnet-4-5-20250929
+      - AGENT_RUNTIME_BACKEND=mock
     depends_on:
       db:
         condition: service_healthy
@@ -72,11 +68,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - AGENT_RUNTIME_BACKEND=openhands
-      - OPENHANDS_AGENT_SERVER_URL=http://localhost:8010
-      - OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS=120
-      - OPENHANDS_AGENT_SERVER_VERIFY_SSL=True
-      - LLM_DEFAULT_MODEL=anthropic/claude-sonnet-4-5-20250929
+      - AGENT_RUNTIME_BACKEND=mock
     depends_on:
       db:
         condition: service_healthy

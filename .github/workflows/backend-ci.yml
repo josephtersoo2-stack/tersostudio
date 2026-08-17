@@ -102,3 +102,10 @@ jobs:
           CELERY_RESULT_BACKEND: redis://localhost:6379/2
           SECRET_KEY: ci-secret-key-do-not-use-in-production-12345
         run: uv run pytest
+
+      - name: Validate Docker Compose Configuration
+        run: docker compose config
+
+      - name: Build Docker Container Image
+        run: docker build -t tersuite-backend:b1 .
+

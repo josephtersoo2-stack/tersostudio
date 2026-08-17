@@ -36,7 +36,10 @@ class OpenHandsAdapterTests(unittest.TestCase):
         )
 
     def test_config_secret_masking(self):
-        """Verify OpenHandsServerConfig repr masks server_api_key and llm_api_key."""
+        """Verify OpenHandsServerConfig repr, asdict, and json serialization mask secrets."""
+        import dataclasses
+        import json
+
         config = OpenHandsServerConfig(
             server_url="http://localhost:8010",
             server_api_key="secret-server-key-123",
@@ -45,8 +48,43 @@ class OpenHandsAdapterTests(unittest.TestCase):
         config_repr = repr(config)
         self.assertNotIn("secret-server-key-123", config_repr)
         self.assertNotIn("sk-or-v1-secret-llm-key-456", config_repr)
-        self.assertIn("server_api_key='***'", config_repr)
-        self.assertIn("llm_api_key='***'", config_repr)
+        self.assertIn("**********", config_repr)
+
+        asdict_repr = str(dataclasses.asdict(config))
+        self.assertNotIn("secret-server-key-123", asdict_repr)
+        self.assertNotIn("sk-or-v1-secret-llm-key-456", asdict_repr)
+
+        json_str = json.dumps(dataclasses.asdict(config), default=str)
+        self.assertNotIn("secret-server-key-123", json_str)
+        self.assertNotIn("sk-or-v1-secret-llm-key-456", json_str)
+
+    def test_tls_verification_mandatory(self):
+        """Verify disabling TLS verification (server_verify_ssl=False) is rejected with clear error."""
+        with self.assertRaises(ValueError) as ctx:
+            OpenHandsServerConfig(server_verify_ssl=False)
+        self.assertIn("Disabling TLS verification", str(ctx.exception))
+
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsAgent")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsLLM")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsRemoteWorkspace")
+    def test_workspace_timeout_propagation(self, mock_ws_cls, mock_llm_cls, mock_agent_cls, mock_conv_cls):
+        """Verify server_timeout_seconds is propagated to RemoteWorkspace read_timeout."""
+        custom_config = OpenHandsServerConfig(
+            server_url="http://mock-server:8010",
+            server_timeout_seconds=45,
+        )
+        runtime = OpenHandsAgentRuntime(custom_config)
+        session_cfg = SessionConfig(
+            generation_id="gen-timeout-01",
+            agent_run_id="run-timeout-01",
+            model="anthropic/claude-3.5-sonnet",
+        )
+        runtime.create_session(session_cfg)
+
+        mock_ws_cls.assert_called_once()
+        ws_kwargs = mock_ws_cls.call_args[1]
+        self.assertEqual(ws_kwargs["read_timeout"], 45)
 
     @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
     @patch("runtime.adapters.openhands.adapter.OpenHandsAgent")
@@ -74,18 +112,55 @@ class OpenHandsAdapterTests(unittest.TestCase):
         self.assertEqual(llm_kwargs["api_key"].get_secret_value(), "llm-only-token-xyz")
         self.assertNotEqual(llm_kwargs["api_key"].get_secret_value(), "server-only-token-abc")
 
-        # 2. OpenHandsRemoteWorkspace receives ONLY server_api_key
+        # 2. OpenHandsRemoteWorkspace receives ONLY server_api_key (unwrapped string)
         mock_ws_cls.assert_called_once()
         ws_kwargs = mock_ws_cls.call_args[1]
         self.assertEqual(ws_kwargs["api_key"], "server-only-token-abc")
         self.assertNotEqual(ws_kwargs["api_key"], "llm-only-token-xyz")
 
-    def test_headers_include_auth_token_and_sdk_version(self):
-        """Verify headers contain authorization bearer, user agent, and content type."""
-        headers = self.runtime._get_headers()
-        self.assertEqual(headers["Authorization"], "Bearer test-api-key-xyz")
-        self.assertEqual(headers["Content-Type"], "application/json")
-        self.assertIn("OpenHands-SDK/1.42.1", headers["User-Agent"])
+    @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsAgent")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsLLM")
+    @patch("runtime.adapters.openhands.adapter.OpenHandsRemoteWorkspace")
+    def test_table_driven_provider_credential_selection(
+        self, mock_ws_cls, mock_llm_cls, mock_agent_cls, mock_conv_cls
+    ):
+        """Table-driven test verifying model prefix to provider API key mapping."""
+        import os
+
+        test_cases = [
+            ("openrouter/openai/gpt-4o", {"OPENROUTER_API_KEY": "sk-or-test-123"}, "sk-or-test-123"),
+            ("anthropic/claude-3-7-sonnet", {"ANTHROPIC_API_KEY": "sk-ant-test-456"}, "sk-ant-test-456"),
+            ("openai/gpt-4o-mini", {"OPENAI_API_KEY": "sk-oa-test-789"}, "sk-oa-test-789"),
+            ("gemini/gemini-2.0-flash", {"GEMINI_API_KEY": "sk-gem-test-101"}, "sk-gem-test-101"),
+            ("groq/llama-3.3-70b", {"GROQ_API_KEY": "sk-gq-test-202"}, "sk-gq-test-202"),
+            ("unknown-provider/model-x", {"OPENROUTER_API_KEY": "sk-or-test-123"}, None),
+            ("anthropic/claude-3-5-sonnet", {}, None),
+        ]
+
+        for model_name, env_vars, expected_key in test_cases:
+            with patch.dict(os.environ, env_vars, clear=True):
+                mock_llm_cls.reset_mock()
+                runtime = OpenHandsAgentRuntime(OpenHandsServerConfig(server_url="http://mock:8010"))
+                session_cfg = SessionConfig(
+                    generation_id="gen-table-01",
+                    agent_run_id="run-table-01",
+                    model=model_name,
+                )
+                runtime.create_session(session_cfg)
+
+                mock_llm_cls.assert_called_once()
+                llm_kwargs = mock_llm_cls.call_args[1]
+                actual_key = llm_kwargs.get("api_key")
+                if expected_key is None:
+                    self.assertIsNone(actual_key, f"Expected None for model {model_name}")
+                else:
+                    self.assertIsNotNone(actual_key, f"Expected key for model {model_name}")
+                    self.assertEqual(
+                        actual_key.get_secret_value(),
+                        expected_key,
+                        f"Mismatch for model {model_name}",
+                    )
 
     @patch("runtime.adapters.openhands.adapter.OpenHandsConversation")
     def test_create_session_success(self, mock_conv_cls):

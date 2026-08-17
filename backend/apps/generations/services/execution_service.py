@@ -37,8 +37,6 @@ def _build_runtime():
             server_timeout_seconds=getattr(settings, "OPENHANDS_AGENT_SERVER_TIMEOUT_SECONDS", 120),
             server_verify_ssl=getattr(settings, "OPENHANDS_AGENT_SERVER_VERIFY_SSL", True),
             llm_default_model=getattr(settings, "LLM_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
-            llm_api_key=getattr(settings, "OPENROUTER_API_KEY", "") or None,
-            llm_base_url=getattr(settings, "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") or None,
         )
         return OpenHandsAgentRuntime(config=config)
 

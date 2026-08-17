@@ -49,6 +49,7 @@ The long-term platform must support WordPress themes without weakening the plugi
 10. **Safe learning** — generated code, failures, fixes, and outcomes improve Tersuite only through a governed evidence and promotion pipeline.
 11. **Truthful phase reporting** — a phase is complete only when its exit criteria and verification evidence are present in the repository.
 12. **Preserve working code** — re-baselining the existing application means auditing and correcting it, not deleting correct work or performing an unnecessary rewrite.
+13. **Scoped retirement of dead/superseded code** — every milestone must search references, identify runtime/API/migration dependencies, identify replacements, update tests, and report removals. Obsolete, duplicated, unreachable, incompatible, or abandoned implementation is systematically retired rather than left behind as technical debt.
 
 ---
 
@@ -402,7 +403,7 @@ Every transition declares allowed origins, authorization, idempotency key, side 
 
 ## 12. Backend-First Implementation Sequence
 
-The repository already contains partial work. Each milestone begins with a gap audit, preserves correct code, corrects defects, and adds only the scoped capability. Existing later-phase work remains provisional until its prerequisites pass.
+The repository already contains partial work. Each milestone begins with a gap audit, preserves correct code, corrects defects, and adds only the scoped capability. Every milestone must search references, identify runtime/API/migration dependencies, identify replacements, update tests, and report removals. Existing later-phase work remains provisional until its prerequisites pass.
 
 ### B0 — Architecture re-baseline
 
@@ -412,7 +413,8 @@ Deliverables:
 - system and module contracts aligned with it;
 - corrected AGENTS operating rules;
 - explicit plugin-first/theme-ready boundary;
-- current implementation inventory and gap matrix.
+- current implementation inventory and gap matrix;
+- obsolete-code ledger classifying legacy/provisional implementation using KEEP, REFACTOR, REPLACE, REMOVE, and DEFER.
 
 Exit criteria: no contradictory authoritative documents and every backend milestone has testable boundaries.
 

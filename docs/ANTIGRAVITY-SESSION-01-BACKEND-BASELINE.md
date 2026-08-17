@@ -1,92 +1,98 @@
-# Antigravity Session 01 — Reproducible Backend Baseline
+# Implementation Instruction — Antigravity Session 01 (B1 Backend Baseline)
 
-Copy the implementation instruction below into Google Antigravity for the first coding session.
+You are working on the existing Tersuite AI Studio repository. This is an implementation and verification session, not a rewrite.
 
 ---
 
-## Implementation instruction
+## 1. Objective
 
-You are working on the existing Tersuite AI Studio repository. This is a correction and verification session, not a rewrite.
+Establish a truthful, reproducible, and secure backend foundation for roadmap milestone B1. Inspect the existing backend first, preserve correct work, correct only foundation defects within this scope, and provide evidence that a clean environment can install and run the backend test baseline.
 
-### Objective
+---
 
-Establish a truthful, reproducible backend foundation for roadmap milestone B1. Inspect the existing backend first, preserve correct work, correct only foundation defects within this scope, and provide evidence that a clean environment can install and run the backend test baseline.
+## 2. Required Reading Order
 
-### Required reading
-
-Read completely before editing:
+Read completely in this strict order before editing:
 
 1. `AGENTS.md`
 2. `docs/TERSUITE-IMPLEMENTATION-ROADMAP.md`
 3. `docs/ANTIGRAVITY-DEVELOPMENT-PROTOCOL.md`
-4. `docs/TERSUITE-PHASE-1-CORRECTION-SPEC.md`
-5. `docs/TERSUITE-PHASE-2-IMPLEMENTATION-SPEC.md`
-6. `docs/OPENHANDS-INTEGRATION.md`
-7. Backend dependency files, settings, Docker files, test configuration, and CI configuration
+4. `docs/B1-BACKEND-BASELINE-PHASE-SPEC.md`
+5. `docs/B1-BACKEND-BASELINE-DETAILED-IMPLEMENTATION.md`
 
-If these documents conflict, report the conflict before implementing the affected behavior.
+If these documents conflict, stop and report the conflict before implementing the affected behavior.
 
-### Scope
+---
 
-This session may change only backend foundation, dependency, environment, test-bootstrap, health-check, and directly related documentation files.
+## 3. Non-Invention & Implementation Scope
 
-Required work:
+Antigravity is an implementer, not an architect. Do not invent unapproved features, dependencies, models, settings, routes, synthetic fallbacks, or alternative architectures.
 
-1. Inventory the actual Python and service requirements used by the repository.
-2. Select and document one supported Python version compatible with the pinned OpenHands release and the rest of the backend.
-3. Replace non-reproducible dependency installation with a committed, compatible lock or constraints workflow. Do not claim that direct top-level pins alone are a full lock.
-4. Ensure the selected OpenHands SDK, tools, workspace, and Agent Server packages can be installed together in the verified environment.
-5. Keep Agent Server credentials separate from LLM provider credentials in configuration names and documentation. Do not refactor the OpenHands adapter in this session unless a minimal import/bootstrap change is required for the backend to start.
-6. Validate Django settings for PostgreSQL, Redis, Celery, and Channels without exposing credentials.
-7. Verify or correct backend health/readiness endpoints so they distinguish application health from unavailable required services where the existing contract expects this.
-8. Establish exact documented commands for installation, migrations, lint/static checks if configured, and tests.
-9. Run the backend test suite and classify every remaining failure. Fix only failures caused by B1 foundation work or an obvious existing baseline defect that blocks test collection/startup.
-10. Update documentation truthfully with verified commands, versions, failures, and limitations.
+This session may change only:
+- Python version declaration and documentation (`.python-version`, `pyproject.toml`, `Dockerfile`, `README.md`)
+- Dependency management and lockfiles (`pyproject.toml`, `uv.lock`, removal of `requirements.txt`)
+- Docker, Compose, and environment baseline configurations (`Dockerfile`, `docker-compose.yml`, `.dockerignore`, `.env.example`)
+- Configuration settings parsing and credential separation (`backend/config/settings/base.py`, `backend/runtime/adapters/openhands/config.py`)
+- OpenHands adapter configuration and secret safety (`backend/runtime/adapters/openhands/adapter.py`, `backend/apps/generations/services/execution_service.py`)
+- Truthful health checks (`backend/apps/core/views.py`, `backend/apps/core/tests/test_health.py`)
+- CI workflow (`.github/workflows/backend-ci.yml`)
+- OpenHands integration documentation (`docs/OPENHANDS-INTEGRATION.md`)
+- B1 evidence report (`docs/reports/B1-BACKEND-BASELINE-REPORT.md`)
 
-### Explicitly out of scope
+---
 
-Do not implement or redesign feature discovery, specifications, planning, multi-agent orchestration, component registries, blueprints, self-learning, WordPress sandbox, WordPress client, frontend, billing, theme creation, or broad OpenHands adapter behavior beyond installation and startup blockers.
+## 4. Protected Files & Prohibited Changes
 
-Do not delete existing Phase 5 or control-center functionality. Do not mark it frozen or complete.
+Do not modify or delete:
+- `frontend/**`
+- Active architecture contracts (`docs/API-CONTRACT.md`, `docs/DATA-MODEL.md`, `docs/CC-02 Implementation Spec.md`, `docs/CC-03-OPERATIONAL-ACTIONS-SPEC.md`, `docs/TERSUITE-CONTROL-CENTER-CC-01-SPEC.md`, `docs/TERSUITE-CONTROL-CENTER-CC-02-SPEC.md`)
+- Django database models or historical database migrations
+- Knowledge-base implementation or seed knowledge data
+- Realtime consumers, auth tokens, state machine, or existing mock adapter
+- B2 or later roadmap features
 
-### Safety requirements
+---
 
-- Preserve unrelated repository changes.
-- Do not commit `.env` files or credentials.
-- Do not use Agent Server API keys as model-provider fallbacks.
-- Do not weaken or skip tests to obtain a green result.
-- Do not replace real package installation with test-only stubs.
-- Keep development/test mocks clearly separated from production configuration.
+## 5. Removal Ledger & Pre-Deletion Checks
 
-### Required tests and evidence
+Every removal must be classified in the report using `KEEP`, `REFACTOR`, `REPLACE`, `REMOVE`, or `DEFER`. Before deleting any file or configuration setting, perform repository searches to ensure no active code or test relies on orphaned references.
 
-At minimum, report and where applicable run:
+---
 
-1. Clean dependency resolution/install command
-2. `python --version` from the verified environment
-3. Imports and versions for all four pinned OpenHands packages
-4. Django system check
-5. Migration consistency check
-6. Backend test suite with passed/failed/skipped totals
-7. Health/readiness endpoint tests
-8. Secret-serialization regression tests if configuration code changes
+## 6. Stop Conditions
 
-If Docker or required services are unavailable, do not fabricate results. Report exactly what was and was not verified.
+Stop and report immediately if:
+- Required documents conflict or are missing.
+- OpenHands 1.42.1 packages fail to install or import together on Python 3.12.
+- A test failure cannot be resolved within the B1 boundary.
+- Unspecified architectural decisions are required.
 
-### Exit criteria
+---
 
-The session is successful only if:
+## 7. Required Verification Commands
 
-- dependency installation is reproducible from committed files;
-- the selected Python version is explicit and compatible;
-- the OpenHands packages install and import together;
-- Django starts and passes its system check;
-- migrations are consistent;
-- backend tests run to completion;
-- remaining failures are documented with root-cause classification;
-- no credential is committed or serialized;
-- no future milestone functionality was added.
+Execute and report the exact results of:
+```bash
+git diff --check
+uv --version
+uv lock --check
+uv sync --frozen --extra dev
+uv run python -c "import importlib.metadata as m; print({p: m.version(p) for p in ['openhands-sdk','openhands-tools','openhands-agent-server','openhands-workspace']})"
+uv run python manage.py check
+uv run python manage.py makemigrations --check --dry-run
+uv run pytest
+docker compose config
+docker build -t tersuite-backend:b1 .
+```
 
-### Git and report requirements
+---
 
-Work on a dedicated branch. Commit and push the completed scoped changes. Return the exact report format required by `docs/ANTIGRAVITY-DEVELOPMENT-PROTOCOL.md`, including branch, commit SHA, every changed file, migrations, exact commands, test counts, unresolved failures, and deviations.
+## 8. Required Evidence Report
+
+Produce `docs/reports/B1-BACKEND-BASELINE-REPORT.md` following the protocol structure with complete file changes, removal ledger, exact test counts, and exit criteria evidence.
+
+---
+
+## 9. Independent GitHub Review Gate
+
+Commit and push to `feature/b1-backend-baseline`. A milestone is complete only after independent review verifies the GitHub commit and passing CI checks.

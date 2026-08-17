@@ -34,3 +34,27 @@ class RuntimeContractTests(unittest.TestCase):
         session = OpenHandsAgentSession(session_id="s-1", conversation_id="conv-123", config=config)
         self.assertIsInstance(session, AgentSession)
         self.assertEqual(session.remote_conversation_id, "conv-123")
+
+    def test_compose_and_env_mock_backend_default(self):
+        """Verify default Compose and .env.example configuration uses mock backend and forces no Agent Server."""
+        import os
+        from pathlib import Path
+
+        base_dir = Path(__file__).resolve().parent.parent.parent
+        compose_path = base_dir / "docker-compose.yml"
+        env_example_path = base_dir / ".env.example"
+
+        self.assertTrue(compose_path.exists(), "docker-compose.yml must exist")
+        self.assertTrue(env_example_path.exists(), ".env.example must exist")
+
+        compose_content = compose_path.read_text(encoding="utf-8")
+        env_content = env_example_path.read_text(encoding="utf-8")
+
+        # 1. Assert mock backend is set in both
+        self.assertIn("AGENT_RUNTIME_BACKEND=mock", compose_content)
+        self.assertIn("AGENT_RUNTIME_BACKEND=mock", env_content)
+
+        # 2. Assert docker-compose.yml does not force openhands backend or localhost agent server lines
+        self.assertNotIn("AGENT_RUNTIME_BACKEND=openhands", compose_content)
+        self.assertNotIn("OPENHANDS_AGENT_SERVER_URL=http://localhost:8010", compose_content)
+
