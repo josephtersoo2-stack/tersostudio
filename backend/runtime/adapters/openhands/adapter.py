@@ -37,10 +37,7 @@ from .session import OpenHandsAgentSession
 
 logger = logging.getLogger("tersuite.runtime")
 
-class _DummySDKException(Exception):
-    pass
-
-
+# Import official OpenHands SDK components
 try:
     from openhands.sdk.agent import Agent as OpenHandsAgent
     from openhands.sdk.conversation import Conversation as OpenHandsConversation
@@ -66,8 +63,8 @@ except ImportError:
     RemoteConversation = None
     OpenHandsEvent = None
     ConversationExecutionStatus = None
-    ConversationRunError = _DummySDKException
-    WebSocketConnectionError = _DummySDKException
+    ConversationRunError = Exception
+    WebSocketConnectionError = Exception
 
 
 def _resolve_llm_credentials(
