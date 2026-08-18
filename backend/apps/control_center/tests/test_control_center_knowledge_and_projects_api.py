@@ -6,7 +6,9 @@ from rest_framework.test import APIClient
 
 from apps.generations.enums import GenerationStatus
 from apps.generations.models import Generation
+from apps.organizations.services import ensure_personal_organization
 from apps.projects.models import Project
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -27,6 +29,7 @@ class TestControlCenterKnowledgeAndProjectsAPI:
             last_name="KB",
             is_staff=False,
         )
+        self.org = ensure_personal_organization(self.customer)
 
         # Staff operator
         self.staff_user = User.objects.create_user(
@@ -38,8 +41,9 @@ class TestControlCenterKnowledgeAndProjectsAPI:
         )
 
         # Seed projects
-        self.active_project = Project.objects.create(
-            user=self.customer,
+        self.active_project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.customer,
             name="Active WooCommerce Plugin",
             slug="active-woo-plugin",
             plugin_slug="active-woo-plugin",
@@ -47,8 +51,9 @@ class TestControlCenterKnowledgeAndProjectsAPI:
             php_version="8.3",
             is_archived=False,
         )
-        self.archived_project = Project.objects.create(
-            user=self.customer,
+        self.archived_project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.customer,
             name="Archived Affiliate Tracker",
             slug="archived-affiliate-tracker",
             plugin_slug="archived-affiliate-tracker",
@@ -57,11 +62,13 @@ class TestControlCenterKnowledgeAndProjectsAPI:
 
         # Seed a generation under active project
         Generation.objects.create(
+            organization=self.org,
             project=self.active_project,
-            user=self.customer,
+            created_by=self.customer,
             prompt="Build WooCommerce high performance extension.",
             status=GenerationStatus.BUILDING,
         )
+
 
     # 1. Anonymous Access (Expect 401)
     def test_anonymous_access_denied(self):

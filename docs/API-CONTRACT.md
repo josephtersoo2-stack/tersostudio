@@ -6,9 +6,16 @@ All private API requests require token-based authentication obtained from `/api/
 
 ```http
 Authorization: Token 9944b09199c62bcf9418ad846dd0e4bbdfc6ee4b
+X-Tersuite-Organization-ID: d6ade252-754f-43fa-9bc3-88598f0e2114
 Content-Type: application/json
 Accept: application/json
 ```
+
+### Organization Context Header (`X-Tersuite-Organization-ID`)
+- **Single active membership**: If the authenticated user belongs to exactly one active organization, the header is optional and defaults safely to that organization.
+- **Multiple active memberships**: The header `X-Tersuite-Organization-ID` is **required**. Omitting it returns `400 Bad Request` (`organization_context_required`).
+- **Invalid UUID**: Returns `400 Bad Request` (`invalid_organization_context`).
+- **Non-member / Inactive Organization**: Returns `404 Not Found` (`organization_not_found`).
 
 ### Standard Error Response Format
 
@@ -28,206 +35,201 @@ Accept: application/json
 
 ---
 
-## 2. Projects API (`/api/v1/projects/`)
+## 2. Organizations API (`/api/v1/organizations/`)
 
-### 2.1. List Projects
-- **Endpoint**: `GET /api/v1/projects/`
-- **Query Parameters**:
-  - `archived`: `true` or `false`
-  - `search`: search substring in project name
-- **Response**: `200 OK`
+### 2.1. List Organizations
+- **Endpoint**: `GET /api/v1/organizations/`
+- **Response**: `200 OK` (list of organizations where the user is an active member)
+
+### 2.2. Create Organization
+- **Endpoint**: `POST /api/v1/organizations/`
+- **Payload**:
   ```json
-  [
-    {
-      "id": "b1f844b2-9213-4c9f-8547-0b19280d8291",
-      "user_id": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "name": "WooCommerce Affiliate Pro",
-      "slug": "woocommerce-affiliate-pro",
-      "description": "Multi-tier affiliate tracking plugin.",
-      "plugin_slug": "woocommerce-affiliate-pro",
-      "wordpress_version": "6.7",
-      "php_version": "8.2",
-      "metadata": {},
-      "is_archived": false,
-      "generations_count": 2,
-      "created_at": "2026-08-15T00:30:00Z",
-      "updated_at": "2026-08-15T00:30:00Z"
-    }
-  ]
+  {
+    "name": "Acme Plugin Studio",
+    "slug": "acme-plugin-studio"
+  }
   ```
+- **Response**: `201 Created` (creator automatically assigned `OWNER` role)
 
-### 2.2. Create Project
+### 2.3. Organization Memberships (`/api/v1/organizations/{id}/members/`)
+- **List Members**: `GET /api/v1/organizations/{id}/members/`
+- **Add Member**: `POST /api/v1/organizations/{id}/members/`
+  - Payload: `{"email": "collaborator@example.com", "role": "MEMBER"}`
+- **Update Member Role**: `PATCH /api/v1/organizations/{id}/members/{membership_id}/`
+  - Payload: `{"role": "ADMIN"}`
+- **Remove Member**: `DELETE /api/v1/organizations/{id}/members/{membership_id}/`
+
+---
+
+## 3. Products API (`/api/v1/products/`)
+
+> **Governed Product Lifecycle**: WordPress products are provisioned automatically through the Project service. Direct creation (`POST /api/v1/products/`), root deletion (`DELETE /api/v1/products/{id}/`), and full replacement (`PUT /api/v1/products/{id}/`) are disallowed and return `405 Method Not Allowed`.
+
+### 3.1. List Products
+- **Endpoint**: `GET /api/v1/products/`
+- **Query Parameters**: `kind`, `is_archived`, `search`
+- **Response**: `200 OK`
+
+### 3.2. Retrieve Product Detail
+- **Endpoint**: `GET /api/v1/products/{id}/`
+- **Response**: `200 OK` (includes nested `plugin_target`)
+
+### 3.3. Update Product
+- **Endpoint**: `PATCH /api/v1/products/{id}/`
+- **Payload**:
+  ```json
+  {
+    "display_name": "Updated Plugin Name",
+    "is_archived": false
+  }
+  ```
+- **Response**: `200 OK`
+
+---
+
+## 4. WordPress Sites API (`/api/v1/sites/`)
+
+### 4.1. List & Create Sites
+- **Endpoint**: `GET /api/v1/sites/`
+- **Endpoint**: `POST /api/v1/sites/`
+- **Payload**:
+  ```json
+  {
+    "name": "Staging Store",
+    "url": "https://staging.example.com",
+    "environment": "STAGING",
+    "metadata": {"hosting": "Cloudways"}
+  }
+  ```
+- **Response**: `201 Created` (Secret keys in metadata are rejected with `400 Bad Request`)
+
+### 4.2. Site Profile Snapshots (`/api/v1/sites/{site_id}/profiles/`)
+- **List Snapshots**: `GET /api/v1/sites/{site_id}/profiles/`
+- **Retrieve Snapshot**: `GET /api/v1/sites/{site_id}/profiles/{snapshot_id}/`
+- **Record Snapshot**: `POST /api/v1/sites/{site_id}/profiles/`
+- **Payload**:
+  ```json
+  {
+    "wordpress_version": "6.7.1",
+    "php_version": "8.3.0",
+    "multisite": false,
+    "locale": "en_US",
+    "active_theme": {"name": "Astra", "version": "4.6.0"},
+    "active_plugins": [{"name": "WooCommerce", "version": "9.4.0"}],
+    "server": {"web_server": "nginx/1.24"},
+    "capabilities": {},
+    "health": {}
+  }
+  ```
+- **Response**: `201 Created` (immutable snapshot with sequential version and SHA-256 checksum)
+
+---
+
+## 5. Projects API (`/api/v1/projects/`)
+
+### 5.1. List & Create Projects
+- **Endpoint**: `GET /api/v1/projects/`
 - **Endpoint**: `POST /api/v1/projects/`
 - **Payload**:
   ```json
   {
     "name": "WordPress Stripe Connect",
+    "slug": "wp-stripe-connect",
     "description": "Marketplace split payment gateway.",
     "wordpress_version": "6.7",
     "php_version": "8.2",
     "metadata": {"preferred_currency": "USD"}
   }
   ```
-- **Response**: `201 Created` (returns created Project)
+- **Response**: `201 Created` (automatically provisions underlying `WordPressProduct` and `PluginTarget`)
 
-### 2.3. Retrieve Project
-- **Endpoint**: `GET /api/v1/projects/{id}/`
-- **Response**: `200 OK`
+### 5.2. Root Project Deletion Disallowed
+- Root `DELETE /api/v1/projects/{id}/` returns `405 Method Not Allowed`. Projects are archived via `/archive/`.
 
-### 2.4. Update Project
-- **Endpoint**: `PATCH /api/v1/projects/{id}/`
-- **Payload**: `{"description": "Updated project description."}`
-- **Response**: `200 OK`
-
-### 2.5. Archive / Unarchive Project
-- **Endpoint**: `POST /api/v1/projects/{id}/archive/`
-- **Endpoint**: `POST /api/v1/projects/{id}/unarchive/`
-- **Response**: `200 OK`
+### 5.3. Link Sites to Project (`/api/v1/projects/{id}/sites/`)
+- **List Attached Sites**: `GET /api/v1/projects/{id}/sites/`
+- **Attach Site**: `POST /api/v1/projects/{id}/sites/`
+  - Payload: `{"site_id": "<uuid>", "purpose": "PRIMARY"}`
+- **Retrieve Attached Site**: `GET /api/v1/projects/{id}/sites/{project_site_id}/`
+- **Detach Site**: `DELETE /api/v1/projects/{id}/sites/{project_site_id}/`
 
 ---
 
-## 3. Generations API (`/api/v1/generations/`)
+## 6. Conversations API (`/api/v1/conversations/`)
+
+### 6.1. List & Create Conversations
+- **Endpoint**: `GET /api/v1/conversations/`
+- **Endpoint**: `POST /api/v1/conversations/`
+- **Payload**:
+  ```json
+  {
+    "project_id": "<project-uuid>",
+    "title": "Architecture Discussions",
+    "purpose": "PROJECT_PLANNING"
+  }
+  ```
+- **Response**: `201 Created`
+
+### 6.2. Append Conversation Message (Idempotent)
+- **Endpoint**: `POST /api/v1/conversations/{id}/messages/`
+- **Payload**:
+  ```json
+  {
+    "content": "Please design the referral cookie attribution handler.",
+    "client_message_id": "41699990-28b3-469b-8106-d7b1b369528d",
+    "content_format": "MARKDOWN"
+  }
+  ```
+- **Response**:
+  - `201 Created` with `idempotent_replay: false` on first submission
+  - `200 OK` with `idempotent_replay: true` on duplicate `client_message_id` submission
+
+### 6.3. Retrieve Messages (Append-Only)
+- **Endpoint**: `GET /api/v1/conversations/{id}/messages/`
+- **Response**: `200 OK` (ordered by monotonic sequence number)
+
+### 6.4. Archive Conversation
+- **Endpoint**: `POST /api/v1/conversations/{id}/archive/`
+- **Response**: `200 OK` (locks conversation against further message insertion)
+
+---
+
+## 7. Generations API (`/api/v1/generations/`)
 
 > **Durable Generation Retention**: Generation records cannot be deleted via the public REST API (`DELETE /api/v1/generations/{id}/` returns `405 Method Not Allowed`). All generation history remains durable.
 
-### 3.1. List Generations
+### 7.1. List Generations
 - **Endpoint**: `GET /api/v1/generations/`
-- **Query Parameters**:
-  - `project_id`: filter by project UUID
-  - `status`: filter by status (`DRAFT`, `BUILDING`, `COMPLETED`, etc.)
+- **Query Parameters**: `project_id`, `status`
 - **Response**: `200 OK`
-  ```json
-  [
-    {
-      "id": "7fa85f64-5717-4562-b3fc-2c963f66afa7",
-      "project": "b1f844b2-9213-4c9f-8547-0b19280d8291",
-      "project_name": "WooCommerce Affiliate Pro",
-      "user": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "prompt": "Build a custom affiliate tracking plugin.",
-      "status": "DRAFT",
-      "current_step_number": 0,
-      "total_steps": 6,
-      "steps_count": 0,
-      "artifacts_count": 0,
-      "failure_category": "",
-      "error_message": "",
-      "created_at": "2026-08-15T00:31:00Z",
-      "updated_at": "2026-08-15T00:31:00Z",
-      "completed_at": null,
-      "failed_at": null,
-      "cancelled_at": null,
-      "paused_at": null
-    }
-  ]
-  ```
 
-### 3.2. Create Generation
+### 7.2. Create Generation
 - **Endpoint**: `POST /api/v1/generations/`
 - **Payload**:
   ```json
   {
     "project_id": "b1f844b2-9213-4c9f-8547-0b19280d8291",
-    "prompt": "Build an affiliate referral plugin with shortcodes.",
-    "metadata": {"priority": "high"}
+    "prompt": "Build a WooCommerce affiliate marketing plugin with multi-tier commissions.",
+    "spec_version": "1.0.0",
+    "plan_version": "1.0.0",
+    "metadata": {}
   }
   ```
-- **Response**: `201 Created`  
-  *(Note: Auto-initializes Workspace metadata. This does NOT provision live Docker containers or runtime sandboxes).*
+- **Response**: `201 Created` (auto-initializes `Workspace` record and sets status to `DRAFT`)
 
-### 3.3. Retrieve Generation Details
+### 7.3. Retrieve Generation Detail
 - **Endpoint**: `GET /api/v1/generations/{id}/`
 - **Response**: `200 OK` (includes nested `steps`, `workspace`, and `artifacts`)
 
-### 3.4. State Transitions
+### 7.4. State Machine Transition
 - **Endpoint**: `POST /api/v1/generations/{id}/transition/`
 - **Payload**:
   ```json
   {
-    "target_status": "SPECIFICATION",
-    "reason": "Feature discovery concluded.",
-    "metadata": {"discovered_features_count": 42}
+    "target_status": "BUILDING",
+    "reason": "Starting execution of coder agent step.",
+    "metadata_update": {}
   }
   ```
-- **Response**: `200 OK` on success, `400 Bad Request` if transition is invalid.
-
-### 3.5. Pause / Cancel / Retry Actions
-- `POST /api/v1/generations/{id}/pause/`
-- `POST /api/v1/generations/{id}/cancel/`
-- `POST /api/v1/generations/{id}/retry/`
-
----
-
-## 4. Generation Steps API (`/api/v1/steps/`) — Read-Only
-
-> **Client Mutation Disallowed**: `POST`, `PUT`, `PATCH`, and `DELETE` on `/api/v1/steps/` return `405 Method Not Allowed`. Steps are managed exclusively by internal orchestrators.
-
-### 4.1. List Steps
-- **Endpoint**: `GET /api/v1/steps/?generation_id={generation_id}`
-- **Response**: `200 OK` (includes nested `runs`)
-
-### 4.2. Retrieve Step
-- **Endpoint**: `GET /api/v1/steps/{id}/`
 - **Response**: `200 OK`
-
----
-
-## 5. Agent Runs API (`/api/v1/runs/`) — Read-Only
-
-> **Client Mutation Disallowed**: `POST`, `PUT`, `PATCH`, and `DELETE` on `/api/v1/runs/` return `405 Method Not Allowed`. Runs are managed exclusively by the agent execution engine.
-
-### 5.1. List Runs
-- **Endpoint**: `GET /api/v1/runs/?step_id={step_id}`
-- **Response**: `200 OK`
-  ```json
-  [
-    {
-      "id": "e4a85f64-5717-4562-b3fc-2c963f66afb1",
-      "step": "c3a85f64-5717-4562-b3fc-2c963f66afb0",
-      "run_number": 1,
-      "runtime_type": "openhands",
-      "session_id": "oh-sess-8f7e6d5c4b3a",
-      "remote_conversation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-      "status": "COMPLETED",
-      "model_name": "anthropic/claude-sonnet-4-5-20250929",
-      "prompt": "Create WordPress schema migration.",
-      "output": "Generated schema migration.",
-      "token_usage": {"prompt_tokens": 850, "completion_tokens": 400, "total_tokens": 1250},
-      "failure_category": "",
-      "error_details": {},
-      "started_at": "2026-08-15T00:32:00Z",
-      "completed_at": "2026-08-15T00:32:15Z"
-    }
-  ]
-  ```
-
----
-
-## 6. Workspaces API (`/api/v1/workspaces/`) — Read-Only
-
-> **Client Mutation Disallowed**: `POST`, `PUT`, `PATCH`, and `DELETE` return `405 Method Not Allowed`.
-
-### 6.1. Retrieve Workspace
-- **Endpoint**: `GET /api/v1/workspaces/{id}/`
-- **Endpoint**: `GET /api/v1/generations/{generation_id}/workspace/`
-- **Response**: `200 OK`
-
----
-
-## 7. Artifacts API (`/api/v1/artifacts/`) — Read-Only / Download
-
-> **Client Mutation Disallowed**: Arbitrary artifact creation and modification (`POST`, `PUT`, `PATCH`, `DELETE`) return `405 Method Not Allowed`.
-
-### 7.1. List Artifacts
-- **Endpoint**: `GET /api/v1/artifacts/?generation_id={generation_id}`
-- **Response**: `200 OK`
-
-### 7.2. Retrieve Artifact Metadata
-- **Endpoint**: `GET /api/v1/artifacts/{id}/`
-- **Response**: `200 OK`
-
-### 7.3. Download Artifact
-- **Endpoint**: `GET /api/v1/artifacts/{id}/download/`
-- **Headers**:
-  - `Content-Type`: MIME type of artifact (e.g. `application/x-php`, `application/zip`)
-  - `Content-Disposition`: `attachment; filename="tersuite-affiliate.php"`
-- **Response**: `200 OK` (binary stream)

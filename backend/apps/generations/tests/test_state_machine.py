@@ -8,7 +8,8 @@ from apps.generations.enums import GenerationStatus
 from apps.generations.exceptions import InvalidStateTransitionError
 from apps.generations.models import Generation
 from apps.generations.services.state_machine import GenerationStateMachine
-from apps.projects.models import Project
+from apps.organizations.services import ensure_personal_organization
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -24,13 +25,16 @@ class GenerationStateMachineTests(TestCase):
             email="qa.lead@tersuite.com",
             password="StrongPassword123!",
         )
-        self.project = Project.objects.create(
-            user=self.user,
+        self.org = ensure_personal_organization(self.user)
+        self.project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.user,
             name="WooCommerce Stripe Connect",
         )
         self.generation = Generation.objects.create(
+            organization=self.org,
             project=self.project,
-            user=self.user,
+            created_by=self.user,
             prompt="Build Stripe Connect gateway for marketplace vendor split payments.",
             status=GenerationStatus.DRAFT,
         )
@@ -141,6 +145,7 @@ class GenerationStateMachineTests(TestCase):
             f"/api/v1/generations/{self.generation.id}/transition/",
             payload,
             format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -157,10 +162,11 @@ class GenerationStateMachineTests(TestCase):
             f"/api/v1/generations/{self.generation.id}/transition/",
             payload,
             format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"], "invalid_state_transition")
+        self.assertEqual(response.data["error"]["code"], "invalid_state_transition")
 
     def test_api_pause_cancel_retry_actions(self):
         """Verify custom action endpoints /pause/, /cancel/, /retry/."""
@@ -172,11 +178,17 @@ class GenerationStateMachineTests(TestCase):
         GenerationStateMachine.transition(self.generation, GenerationStatus.PLANNING)
 
         # Action: Pause
-        pause_resp = self.client.post(f"/api/v1/generations/{self.generation.id}/pause/")
+        pause_resp = self.client.post(
+            f"/api/v1/generations/{self.generation.id}/pause/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(pause_resp.status_code, status.HTTP_200_OK)
         self.assertEqual(pause_resp.data["status"], "PAUSED")
 
         # Action: Cancel
-        cancel_resp = self.client.post(f"/api/v1/generations/{self.generation.id}/cancel/")
+        cancel_resp = self.client.post(
+            f"/api/v1/generations/{self.generation.id}/cancel/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK)
         self.assertEqual(cancel_resp.data["status"], "CANCELLED")

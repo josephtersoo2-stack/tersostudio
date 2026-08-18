@@ -1,12 +1,14 @@
 """Tests for the Generations domain (models, steps, agent runs, and CRUD APIs)."""
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.generations.enums import AgentRunStatus, ArtifactType, GenerationStatus, StepStatus
 from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep, Workspace
-from apps.projects.models import Project
+from apps.organizations.services import ensure_personal_organization
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -22,14 +24,17 @@ class GenerationDomainTests(TestCase):
             email="lead.architect@tersuite.com",
             password="StrongPassword123!",
         )
-        self.project = Project.objects.create(
-            user=self.user,
+        self.org = ensure_personal_organization(self.user)
+        self.project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.user,
             name="WordPress Membership Matrix",
             description="Content restriction and membership levels.",
         )
         self.generation = Generation.objects.create(
+            organization=self.org,
             project=self.project,
-            user=self.user,
+            created_by=self.user,
             prompt="Build a full membership plugin with content locking shortcodes.",
             status=GenerationStatus.DRAFT,
         )
@@ -42,7 +47,12 @@ class GenerationDomainTests(TestCase):
             "prompt": "Create an appointment booking plugin with Google Calendar integration.",
             "metadata": {"preferred_php": "8.3"},
         }
-        response = self.client.post("/api/v1/generations/", payload, format="json")
+        response = self.client.post(
+            "/api/v1/generations/",
+            payload,
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         gen_id = response.data["id"]
@@ -150,7 +160,10 @@ class GenerationDomainTests(TestCase):
         )
 
         self.client.force_authenticate(user=self.user)
-        response = self.client.get(f"/api/v1/generations/{self.generation.id}/")
+        response = self.client.get(
+            f"/api/v1/generations/{self.generation.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["id"], str(self.generation.id))
@@ -163,28 +176,31 @@ class GenerationDomainTests(TestCase):
     def test_generation_cannot_be_deleted_via_api(self):
         """Verify public API disallows destructive DELETE on Generation records (HTTP 405)."""
         self.client.force_authenticate(user=self.user)
-        response = self.client.delete(f"/api/v1/generations/{self.generation.id}/")
+        response = self.client.delete(
+            f"/api/v1/generations/{self.generation.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
 
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
         self.assertTrue(Generation.objects.filter(id=self.generation.id).exists())
 
     def test_generation_ownership_cannot_diverge_from_project_owner(self):
-        """Verify Generation.user is always strictly derived from Project.user."""
+        """Verify Generation organization is strictly derived from / matched to Project organization."""
         other_user = User.objects.create_user(
             email="impostor@tersuite.com",
             password="StrongPassword123!",
         )
+        other_org = ensure_personal_organization(other_user)
 
-        # Attempt creating generation setting user to other_user on project owned by self.user
+        # Attempt creating generation setting organization to other_org on project owned by self.org
         gen = Generation(
+            organization=other_org,
             project=self.project,
-            user=other_user,  # Intentionally diverging
+            created_by=other_user,
             prompt="Attempting to hijack ownership.",
         )
-        gen.save()
-
-        self.assertEqual(gen.user, self.user)
-        self.assertEqual(gen.user, self.project.user)
+        with self.assertRaises((ValidationError, ValueError)):
+            gen.save()
 
     def test_generation_steps_are_read_only_via_api(self):
         """Verify clients cannot create, update, or delete GenerationSteps via public API."""
@@ -198,15 +214,28 @@ class GenerationDomainTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
         # POST
-        post_resp = self.client.post("/api/v1/steps/", {"name": "Fabricated Step"}, format="json")
+        post_resp = self.client.post(
+            "/api/v1/steps/",
+            {"name": "Fabricated Step"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(post_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
         # PATCH
-        patch_resp = self.client.patch(f"/api/v1/steps/{step.id}/", {"name": "Tampered"}, format="json")
+        patch_resp = self.client.patch(
+            f"/api/v1/steps/{step.id}/",
+            {"name": "Tampered"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(patch_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
         # DELETE
-        del_resp = self.client.delete(f"/api/v1/steps/{step.id}/")
+        del_resp = self.client.delete(
+            f"/api/v1/steps/{step.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(del_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def test_agent_runs_are_read_only_via_api(self):
@@ -226,15 +255,28 @@ class GenerationDomainTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
         # POST
-        post_resp = self.client.post("/api/v1/runs/", {"prompt": "Fabricated Run"}, format="json")
+        post_resp = self.client.post(
+            "/api/v1/runs/",
+            {"prompt": "Fabricated Run"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(post_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
         # PATCH
-        patch_resp = self.client.patch(f"/api/v1/runs/{run.id}/", {"output": "Fake output"}, format="json")
+        patch_resp = self.client.patch(
+            f"/api/v1/runs/{run.id}/",
+            {"output": "Fake output"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(patch_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
         # DELETE
-        del_resp = self.client.delete(f"/api/v1/runs/{run.id}/")
+        del_resp = self.client.delete(
+            f"/api/v1/runs/{run.id}/",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+        )
         self.assertEqual(del_resp.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def test_workspaces_and_artifacts_are_read_only_via_api(self):
@@ -243,7 +285,6 @@ class GenerationDomainTests(TestCase):
             generation=self.generation,
             workspace_path=f"workspaces/{self.generation.id}",
         )
-        from apps.generations.enums import ArtifactType
         artifact = Artifact.objects.create(
             generation=self.generation,
             name="plugin.php",
@@ -256,29 +297,50 @@ class GenerationDomainTests(TestCase):
 
         # Workspace mutations disallowed
         self.assertEqual(
-            self.client.post("/api/v1/workspaces/", {}).status_code,
+            self.client.post(
+                "/api/v1/workspaces/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
         self.assertEqual(
-            self.client.patch(f"/api/v1/workspaces/{workspace.id}/", {}).status_code,
+            self.client.patch(
+                f"/api/v1/workspaces/{workspace.id}/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
         self.assertEqual(
-            self.client.delete(f"/api/v1/workspaces/{workspace.id}/").status_code,
+            self.client.delete(
+                f"/api/v1/workspaces/{workspace.id}/",
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
         # Artifact mutations disallowed
         self.assertEqual(
-            self.client.post("/api/v1/artifacts/", {}).status_code,
+            self.client.post(
+                "/api/v1/artifacts/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
         self.assertEqual(
-            self.client.patch(f"/api/v1/artifacts/{artifact.id}/", {}).status_code,
+            self.client.patch(
+                f"/api/v1/artifacts/{artifact.id}/",
+                {},
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
         self.assertEqual(
-            self.client.delete(f"/api/v1/artifacts/{artifact.id}/").status_code,
+            self.client.delete(
+                f"/api/v1/artifacts/{artifact.id}/",
+                HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
-

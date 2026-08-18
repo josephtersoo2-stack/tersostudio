@@ -17,7 +17,9 @@ from apps.generations.models import (
     GenerationStep,
     Workspace,
 )
+from apps.organizations.services import ensure_personal_organization
 from apps.projects.models import Project
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -62,15 +64,20 @@ def normal_user_b(db):
 
 @pytest.fixture
 def seed_data(db, normal_user_a, normal_user_b):
+    org_a = ensure_personal_organization(normal_user_a)
+    org_b = ensure_personal_organization(normal_user_b)
+
     # Projects for Customer A & B
-    project_a = Project.objects.create(
-        user=normal_user_a,
+    project_a = ProjectService.create_project(
+        organization=org_a,
+        actor=normal_user_a,
         name="Alpha WooCommerce Plugin",
         description="Affiliate tracking module",
         is_archived=False,
     )
-    project_b = Project.objects.create(
-        user=normal_user_b,
+    project_b = ProjectService.create_project(
+        organization=org_b,
+        actor=normal_user_b,
         name="Beta Membership Addon",
         description="Subscription manager",
         is_archived=True,
@@ -79,8 +86,9 @@ def seed_data(db, normal_user_a, normal_user_b):
     # Generation 1 (Alpha user - BUILDING)
     long_prompt = "Build a WooCommerce affiliate plugin with high performance tracking " * 5
     gen_1 = Generation.objects.create(
+        organization=org_a,
         project=project_a,
-        user=normal_user_a,
+        created_by=normal_user_a,
         prompt=long_prompt,
         status=GenerationStatus.BUILDING,
         current_step_number=1,
@@ -138,8 +146,9 @@ def seed_data(db, normal_user_a, normal_user_b):
 
     # Generation 2 (Beta user - FAILED)
     gen_2 = Generation.objects.create(
+        organization=org_b,
         project=project_b,
-        user=normal_user_b,
+        created_by=normal_user_b,
         prompt="Build a membership gatekeeper plugin",
         status=GenerationStatus.FAILED,
         failure_category="TIMEOUT",

@@ -8,7 +8,8 @@ from apps.generations.enums import AgentRunStatus, GenerationStatus, StepStatus
 from apps.generations.exceptions import StepNotExecutableError
 from apps.generations.models import AgentRun, Generation, GenerationStep
 from apps.generations.services.execution_service import ExecutionService
-from apps.projects.models import Project
+from apps.organizations.services import ensure_personal_organization
+from apps.projects.services import ProjectService
 from apps.realtime.events import EventType
 from runtime.exceptions import AdapterConnectionError, TimeoutExecutionError
 
@@ -25,14 +26,17 @@ class ExecutionServiceTests(TestCase):
             email="lead.developer@tersuite.com",
             password="StrongPassword123!",
         )
-        self.project = Project.objects.create(
-            user=self.user,
+        self.org = ensure_personal_organization(self.user)
+        self.project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.user,
             name="Test Project",
             description="Testing execution pipeline.",
         )
         self.generation = Generation.objects.create(
+            organization=self.org,
             project=self.project,
-            user=self.user,
+            created_by=self.user,
             prompt="Generate a custom user role manager plugin.",
             status=GenerationStatus.DRAFT,
         )
@@ -226,6 +230,12 @@ class ExecutionServiceTests(TestCase):
         self.assertEqual(result_run.status, AgentRunStatus.FAILED)
         self.assertEqual(result_run.failure_category, "TOOL_ERROR")
         self.assertFalse(result_run.error_details.get("retryable"))
+
+        self.step.refresh_from_db()
+        self.assertEqual(self.step.status, StepStatus.FAILED)
+
+        self.generation.refresh_from_db()
+        self.assertEqual(self.generation.status, GenerationStatus.FAILED)
 
     def test_run_runtime_exception_during_create_session(self):
         """Verify runtime error during create_session is classified properly as NETWORK_CONNECTION."""

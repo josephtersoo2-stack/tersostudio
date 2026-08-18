@@ -11,7 +11,9 @@ from apps.generations.enums import (
     StepStatus,
 )
 from apps.generations.models import AgentRun, Generation, GenerationStep
+from apps.organizations.services import ensure_personal_organization
 from apps.projects.models import Project
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -45,8 +47,10 @@ def staff_user(db):
 
 @pytest.fixture
 def sample_project(db, non_staff_user):
-    return Project.objects.create(
-        user=non_staff_user,
+    org = ensure_personal_organization(non_staff_user)
+    return ProjectService.create_project(
+        organization=org,
+        actor=non_staff_user,
         name="Operational Actions Project",
         description="Testing CC-03 operational mutation controls",
     )
@@ -55,8 +59,9 @@ def sample_project(db, non_staff_user):
 @pytest.fixture
 def active_generation(db, sample_project, non_staff_user):
     gen = Generation.objects.create(
+        organization=sample_project.organization,
         project=sample_project,
-        user=non_staff_user,
+        created_by=non_staff_user,
         prompt="Build WooCommerce high-throughput webhook sync plugin",
         status=GenerationStatus.BUILDING,
         current_step_number=1,
@@ -134,8 +139,9 @@ class TestControlCenterGenerationCancel:
 
     def test_cancel_generation_rejection_on_completed_generation(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Completed plugin",
             status=GenerationStatus.COMPLETED,
             completed_at=timezone.now(),
@@ -152,12 +158,14 @@ class TestControlCenterGenerationCancel:
 
     def test_cancel_generation_rejection_on_already_cancelled_generation(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Cancelled plugin",
             status=GenerationStatus.CANCELLED,
             cancelled_at=timezone.now(),
         )
+
         api_client.force_authenticate(user=staff_user)
 
         url = f"/api/v1/control-center/generations/{gen.id}/cancel/"
@@ -194,8 +202,9 @@ class TestControlCenterStepRetry:
 
     def test_retry_step_staff_happy_path_on_failed_step(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Plugin with a failed step",
             status=GenerationStatus.FAILED,
             failed_at=timezone.now(),
@@ -247,8 +256,9 @@ class TestControlCenterStepRetry:
 
     def test_retry_step_staff_happy_path_on_cancelled_step(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Cancelled plugin generation",
             status=GenerationStatus.CANCELLED,
             cancelled_at=timezone.now(),
@@ -276,8 +286,9 @@ class TestControlCenterStepRetry:
 
     def test_retry_step_rejection_on_completed_step(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Plugin generation",
             status=GenerationStatus.BUILDING,
         )
@@ -301,8 +312,9 @@ class TestControlCenterStepRetry:
 
     def test_retry_step_rejection_on_running_step(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Plugin generation",
             status=GenerationStatus.BUILDING,
         )
@@ -326,8 +338,9 @@ class TestControlCenterStepRetry:
 
     def test_retry_step_rejection_on_completed_generation(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
+            organization=sample_project.organization,
             project=sample_project,
-            user=non_staff_user,
+            created_by=non_staff_user,
             prompt="Done plugin",
             status=GenerationStatus.COMPLETED,
             completed_at=timezone.now(),

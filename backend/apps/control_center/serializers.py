@@ -93,8 +93,8 @@ class ControlCenterGenerationListSerializer(serializers.ModelSerializer):
 
     project_id = serializers.UUIDField(source="project.id", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
-    user_id = serializers.UUIDField(source="user.id", read_only=True)
-    user_email = serializers.CharField(source="user.email", read_only=True)
+    user_id = serializers.UUIDField(source="created_by.id", read_only=True)
+    user_email = serializers.CharField(source="created_by.email", read_only=True)
     prompt_preview = serializers.SerializerMethodField()
     steps_count = serializers.IntegerField(read_only=True, default=0)
     runs_count = serializers.IntegerField(read_only=True, default=0)
@@ -154,9 +154,10 @@ class ControlCenterAgentRunListSerializer(serializers.ModelSerializer):
     agent_role = serializers.CharField(source="step.agent_role", read_only=True)
     generation_id = serializers.UUIDField(source="step.generation.id", read_only=True)
     project_name = serializers.CharField(source="step.generation.project.name", read_only=True)
-    user_email = serializers.CharField(source="step.generation.user.email", read_only=True)
+    user_email = serializers.CharField(source="step.generation.created_by.email", read_only=True)
     prompt_preview = serializers.SerializerMethodField()
     output_preview = serializers.SerializerMethodField()
+
 
     class Meta:
         model = AgentRun
@@ -333,7 +334,7 @@ class ControlCenterGenerationDetailSerializer(serializers.ModelSerializer):
     """Full operational view of a Generation including steps, runs, workspace, and artifacts."""
 
     project = ControlCenterProjectSummarySerializer(read_only=True)
-    user = ControlCenterUserSummarySerializer(read_only=True)
+    user = ControlCenterUserSummarySerializer(source="created_by", read_only=True)
     steps = ControlCenterNestedStepSerializer(many=True, read_only=True)
     workspace = serializers.SerializerMethodField()
     artifacts = ControlCenterArtifactSerializer(many=True, read_only=True)
@@ -359,6 +360,11 @@ class ControlCenterGenerationDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+    def get_workspace(self, obj: Generation):
+        if hasattr(obj, "workspace") and obj.workspace:
+            return ControlCenterWorkspaceSerializer(obj.workspace).data
+        return None
+
     def get_timestamps(self, obj: Generation) -> dict:
         return {
             "created_at": obj.created_at,
@@ -369,14 +375,9 @@ class ControlCenterGenerationDetailSerializer(serializers.ModelSerializer):
             "paused_at": obj.paused_at,
         }
 
-    def get_workspace(self, obj: Generation):
-        if hasattr(obj, "workspace") and obj.workspace:
-            return ControlCenterWorkspaceSerializer(obj.workspace).data
-        return None
-
 
 class ControlCenterAgentRunDetailSerializer(serializers.ModelSerializer):
-    """Full diagnostics view of a specific AgentRun execution attempt."""
+    """Full operational and diagnostic detail of a specific AgentRun attempt."""
 
     generation = serializers.SerializerMethodField()
     step = serializers.SerializerMethodField()
@@ -389,10 +390,10 @@ class ControlCenterAgentRunDetailSerializer(serializers.ModelSerializer):
             "step",
             "run_number",
             "runtime_type",
-            "status",
-            "model_name",
             "session_id",
             "remote_conversation_id",
+            "status",
+            "model_name",
             "prompt",
             "output",
             "token_usage",
@@ -407,11 +408,12 @@ class ControlCenterAgentRunDetailSerializer(serializers.ModelSerializer):
 
     def get_generation(self, obj: AgentRun) -> dict:
         gen = obj.step.generation
+        user_email = gen.created_by.email if gen.created_by else ""
         return {
             "id": str(gen.id),
             "status": gen.status,
             "project_name": gen.project.name,
-            "user_email": gen.user.email,
+            "user_email": user_email,
         }
 
     def get_step(self, obj: AgentRun) -> dict:
@@ -426,7 +428,10 @@ class ControlCenterAgentRunDetailSerializer(serializers.ModelSerializer):
 class ControlCenterProjectListSerializer(serializers.ModelSerializer):
     """Staff-facing project list item with owner information and generation metrics."""
 
-    user = ControlCenterUserSummarySerializer(read_only=True)
+    user = ControlCenterUserSummarySerializer(source="created_by", read_only=True)
+    plugin_slug = serializers.SerializerMethodField()
+    wordpress_version = serializers.SerializerMethodField()
+    php_version = serializers.SerializerMethodField()
     generations_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
@@ -447,6 +452,21 @@ class ControlCenterProjectListSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = fields
+
+    def get_plugin_slug(self, obj: Project) -> str:
+        if hasattr(obj, "product") and obj.product and hasattr(obj.product, "plugin_target"):
+            return obj.product.plugin_target.plugin_slug
+        return ""
+
+    def get_wordpress_version(self, obj: Project) -> str:
+        if hasattr(obj, "product") and obj.product:
+            return obj.product.wordpress_version
+        return "6.7"
+
+    def get_php_version(self, obj: Project) -> str:
+        if hasattr(obj, "product") and obj.product:
+            return obj.product.php_version
+        return "8.2"
 
 
 class KnowledgeUnitListSerializer(serializers.Serializer):

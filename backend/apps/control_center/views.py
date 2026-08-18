@@ -182,7 +182,7 @@ class ControlCenterGenerationsListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Generation.objects.select_related(
-            "project", "user", "workspace"
+            "project", "created_by", "workspace"
         ).annotate(
             steps_count=Count("steps", distinct=True),
             runs_count=Count("steps__runs", distinct=True),
@@ -201,14 +201,14 @@ class ControlCenterGenerationsListView(generics.ListAPIView):
 
         user_id = params.get("user_id")
         if user_id:
-            queryset = queryset.filter(user_id=user_id)
+            queryset = queryset.filter(created_by_id=user_id)
 
         search = params.get("search")
         if search:
             queryset = queryset.filter(
                 Q(prompt__icontains=search)
                 | Q(project__name__icontains=search)
-                | Q(user__email__icontains=search)
+                | Q(created_by__email__icontains=search)
                 | Q(failure_category__icontains=search)
                 | Q(error_message__icontains=search)
             )
@@ -226,7 +226,7 @@ class ControlCenterGenerationDetailView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return Generation.objects.select_related(
-            "project", "user", "workspace"
+            "project", "created_by", "workspace"
         ).prefetch_related(
             "steps",
             "steps__runs",
@@ -246,7 +246,7 @@ class ControlCenterAgentRunsListView(generics.ListAPIView):
             "step",
             "step__generation",
             "step__generation__project",
-            "step__generation__user",
+            "step__generation__created_by",
         ).order_by("-created_at")
 
         params = self.request.query_params
@@ -285,10 +285,11 @@ class ControlCenterAgentRunsListView(generics.ListAPIView):
                 | Q(remote_conversation_id__icontains=search)
                 | Q(step__name__icontains=search)
                 | Q(step__generation__project__name__icontains=search)
-                | Q(step__generation__user__email__icontains=search)
+                | Q(step__generation__created_by__email__icontains=search)
             )
 
         return queryset
+
 
 
 class ControlCenterAgentRunDetailView(generics.RetrieveAPIView):
@@ -304,8 +305,9 @@ class ControlCenterAgentRunDetailView(generics.RetrieveAPIView):
             "step",
             "step__generation",
             "step__generation__project",
-            "step__generation__user",
+            "step__generation__created_by",
         )
+
 
 
 class ControlCenterHealthView(APIView):
@@ -518,7 +520,7 @@ class ControlCenterGenerationCancelView(APIView):
 
     def post(self, request, generation_id, *args, **kwargs):
         generation = get_object_or_404(
-            Generation.objects.select_related("project", "user", "workspace"),
+            Generation.objects.select_related("project", "created_by", "workspace"),
             id=generation_id,
         )
 
@@ -586,7 +588,7 @@ class ControlCenterGenerationCancelView(APIView):
 
         # Re-fetch full generation with prefetch
         generation = (
-            Generation.objects.select_related("project", "user", "workspace")
+            Generation.objects.select_related("project", "created_by", "workspace")
             .prefetch_related("steps", "steps__runs", "artifacts")
             .get(id=generation.id)
         )
@@ -603,9 +605,10 @@ class ControlCenterStepRetryView(APIView):
 
     def post(self, request, step_id, *args, **kwargs):
         step = get_object_or_404(
-            GenerationStep.objects.select_related("generation", "generation__project", "generation__user"),
+            GenerationStep.objects.select_related("generation", "generation__project", "generation__created_by"),
             id=step_id,
         )
+
 
         if step.status in [StepStatus.COMPLETED, StepStatus.RUNNING]:
             return Response(
@@ -706,7 +709,9 @@ class ControlCenterProjectListView(generics.ListAPIView):
     pagination_class = StandardResultsSetPagination
 
     def get_queryset(self):
-        queryset = Project.objects.select_related("user").annotate(
+        queryset = Project.objects.select_related(
+            "organization", "created_by", "product", "product__plugin_target"
+        ).annotate(
             generations_count=Count("generations")
         ).order_by("-created_at")
 
@@ -720,11 +725,13 @@ class ControlCenterProjectListView(generics.ListAPIView):
             queryset = queryset.filter(
                 Q(name__icontains=search)
                 | Q(slug__icontains=search)
-                | Q(plugin_slug__icontains=search)
-                | Q(user__email__icontains=search)
+                | Q(product__plugin_target__plugin_slug__icontains=search)
+                | Q(created_by__email__icontains=search)
+                | Q(organization__name__icontains=search)
             )
 
         return queryset
+
 
 
 class ControlCenterKnowledgeListView(APIView):

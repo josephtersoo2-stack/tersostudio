@@ -9,7 +9,8 @@ from rest_framework.test import APIClient
 from apps.generations.enums import ArtifactType
 from apps.generations.models import Artifact, Generation, Workspace
 from apps.generations.storage.local import LocalFileSystemArtifactStorage
-from apps.projects.models import Project
+from apps.organizations.services import ensure_personal_organization
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -28,13 +29,16 @@ class ArtifactStorageAndAPITests(TestCase):
             email="artifact.tester@tersuite.com",
             password="StrongPassword123!",
         )
-        self.project = Project.objects.create(
-            user=self.user,
+        self.org = ensure_personal_organization(self.user)
+        self.project = ProjectService.create_project(
+            organization=self.org,
+            actor=self.user,
             name="WordPress LMS Core",
         )
         self.generation = Generation.objects.create(
+            organization=self.org,
             project=self.project,
-            user=self.user,
+            created_by=self.user,
             prompt="Build LMS core plugin.",
         )
         self.workspace = Workspace.objects.create(

@@ -110,7 +110,11 @@ class GenerationStepSerializer(serializers.ModelSerializer):
 class GenerationListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for listing generations."""
 
+    organization_id = serializers.UUIDField(source="organization.id", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
+    created_by_id = serializers.UUIDField(source="created_by.id", read_only=True)
+    updated_by_id = serializers.UUIDField(source="updated_by.id", read_only=True)
+    user = serializers.UUIDField(source="created_by.id", read_only=True)
     steps_count = serializers.SerializerMethodField()
     artifacts_count = serializers.SerializerMethodField()
 
@@ -118,9 +122,12 @@ class GenerationListSerializer(serializers.ModelSerializer):
         model = Generation
         fields = [
             "id",
+            "organization_id",
             "project",
             "project_name",
             "user",
+            "created_by_id",
+            "updated_by_id",
             "prompt",
             "status",
             "current_step_number",
@@ -148,7 +155,11 @@ class GenerationListSerializer(serializers.ModelSerializer):
 class GenerationDetailSerializer(serializers.ModelSerializer):
     """Comprehensive serializer for Generation details with nested children."""
 
+    organization_id = serializers.UUIDField(source="organization.id", read_only=True)
     project_name = serializers.CharField(source="project.name", read_only=True)
+    created_by_id = serializers.UUIDField(source="created_by.id", read_only=True)
+    updated_by_id = serializers.UUIDField(source="updated_by.id", read_only=True)
+    user = serializers.UUIDField(source="created_by.id", read_only=True)
     steps = GenerationStepSerializer(many=True, read_only=True)
     workspace = WorkspaceSerializer(read_only=True)
     artifacts = ArtifactSerializer(many=True, read_only=True)
@@ -157,9 +168,12 @@ class GenerationDetailSerializer(serializers.ModelSerializer):
         model = Generation
         fields = [
             "id",
+            "organization_id",
             "project",
             "project_name",
             "user",
+            "created_by_id",
+            "updated_by_id",
             "prompt",
             "status",
             "current_step_number",
@@ -198,22 +212,31 @@ class GenerationCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "status", "created_at"]
 
     def validate_project_id(self, value):
-        """Ensure project exists and belongs to the requesting user."""
+        """Ensure project exists and belongs to the active tenant organization."""
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             raise serializers.ValidationError("Authentication required.")
+        org = getattr(request, "tersuite_organization", None)
         try:
-            project = Project.objects.get(id=value, user=request.user)
+            if org:
+                project = Project.objects.get(id=value, organization=org)
+            else:
+                project = Project.objects.get(id=value)
         except Project.DoesNotExist:
             raise serializers.ValidationError("Project not found or access denied.")
         return project
 
     def create(self, validated_data):
         project = validated_data.pop("project_id")
-        user = project.user
+        request = self.context.get("request")
+        actor = request.user if request and request.user.is_authenticated else None
+        org = project.organization
+
         generation = Generation.objects.create(
             project=project,
-            user=user,
+            organization=org,
+            created_by=actor,
+            updated_by=actor,
             **validated_data,
         )
 

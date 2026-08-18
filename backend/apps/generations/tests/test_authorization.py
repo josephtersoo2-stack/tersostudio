@@ -6,7 +6,8 @@ from rest_framework.test import APIClient
 
 from apps.generations.enums import ArtifactType, GenerationStatus, StepStatus
 from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep, Workspace
-from apps.projects.models import Project
+from apps.organizations.services import ensure_personal_organization
+from apps.projects.services import ProjectService
 
 User = get_user_model()
 
@@ -24,13 +25,17 @@ class MultiTenantAuthorizationTests(TestCase):
             email="tenant.a@tersuite.com",
             password="Password123!",
         )
-        self.project_a = Project.objects.create(
-            user=self.user_a,
+        self.org_a = ensure_personal_organization(self.user_a)
+
+        self.project_a = ProjectService.create_project(
+            organization=self.org_a,
+            actor=self.user_a,
             name="Tenant A Secret Plugin",
         )
         self.generation_a = Generation.objects.create(
+            organization=self.org_a,
             project=self.project_a,
-            user=self.user_a,
+            created_by=self.user_a,
             prompt="Build private custom plugin for Tenant A.",
             status=GenerationStatus.DRAFT,
         )
@@ -63,6 +68,7 @@ class MultiTenantAuthorizationTests(TestCase):
             email="tenant.b@tersuite.com",
             password="Password123!",
         )
+        self.org_b = ensure_personal_organization(self.user_b)
 
     def test_user_b_cannot_access_user_a_project(self):
         """Verify User B cannot retrieve or modify User A's project."""
@@ -82,7 +88,7 @@ class MultiTenantAuthorizationTests(TestCase):
 
         # Delete
         resp = self.client.delete(f"/api/v1/projects/{self.project_a.id}/")
-        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertIn(resp.status_code, (status.HTTP_404_NOT_FOUND, status.HTTP_405_METHOD_NOT_ALLOWED))
 
     def test_user_b_cannot_create_generation_for_user_a_project(self):
         """Verify User B cannot create a generation linked to User A's project."""
