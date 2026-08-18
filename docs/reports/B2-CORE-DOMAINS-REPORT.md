@@ -8,7 +8,7 @@
 - **Branch**: `feature/b2-core-domains`
 - **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215)
 - **CI Status & Conclusion**: Completed / Success (All steps passed)
-- **Test Suite Status**: 234 Passed, 1 Skipped (live OpenHands integration test skipped: no LLM API key found in CI environment), 0 Failed
+- **Test Suite Status**: 234 Passed, 1 Skipped (live OpenHands integration test skipped because the official OpenHands Agent Server was not running at http://127.0.0.1:8010), 0 Failed
 - **Django System Check**: 0 Issues
 - **Migration Integrity Check**: Clean (`makemigrations --check --dry-run` reported No changes detected)
 
@@ -123,6 +123,8 @@ The OpenHands runtime adapter and its unit-test boundary are inherited unchanged
 
 ## 3. Test Suite Verification Summary
 
+### 3.1 Local Verification Run
+
 ```
 ============================= test session starts =============================
 platform win32 -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
@@ -179,6 +181,23 @@ tests\integration\test_openhands_live.py s                               [100%]
 
 ======================= 234 passed, 1 skipped in 72.25s =======================
 ```
+
+### 3.2 GitHub Actions Verification Run
+
+Final evidence-head CI run:
+
+- Run ID: `32114753578`
+- Platform: Linux
+- Python: 3.12.13
+- Django system check: `System check identified no issues (0 silenced).`
+- Migration consistency: `No changes detected`
+- Tests collected: 235
+- Test result: `234 passed, 1 skipped in 28.61s`
+- Skipped test: `tests/integration/test_openhands_live.py:91`
+- Exact skip reason: `SKIPPED — Official OpenHands Agent Server (openhands-agent-server) is not running on 'http://127.0.0.1:8010'.`
+- Docker Compose configuration: PASS
+- Docker build: PASS
+- Docker image tag: `tersuite-backend:b2`
 
 ---
 

@@ -8,7 +8,8 @@
 - Previous B2 code SHA: `0150f31f111474076d9358dac3f4c7c14bc7f069`
 - Previous evidence SHA: `c5b9000ec2a3d0cb18b1eeae922aafbdf87729d0`
 - Correction 03 code SHA: `b79073263d646f19f21012b35552470904bd8a68`
-- Code CI run: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215)
+- Correction 03 code CI run: `32114260215` ([https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215)) — success
+- Correction 03 evidence-head CI run: `32114753578` ([https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114753578](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114753578)) — success
 
 ## 2. Reason for Correction
 
@@ -60,7 +61,13 @@ Record exit-0/no-diff checks for:
 - `makemigrations --check --dry-run`: No changes detected
 - MigrationExecutor tests: 2 passed (forward backfill, slug collision, metadata preservation, and reverse unmarked personal org survival)
 - Full pytest: 234 passed, 1 skipped (0 failed)
-- Skipped test: `tests/integration/test_openhands_live.py:91` (live OpenHands integration test skipped: no LLM API key found in CI environment)
+- Skipped test: `tests/integration/test_openhands_live.py:91`
+- Exact GitHub CI skip reason: `SKIPPED — Official OpenHands Agent Server (openhands-agent-server) is not running on 'http://127.0.0.1:8010'.`
+
+The integration test checks OpenHands Agent Server availability before checking
+for LLM credentials. Therefore the server-unavailable condition is the
+authoritative reason for the skip in GitHub Actions run `32114753578`.
+
 - Docker Compose config: PASS (verified in CI)
 - Docker build: PASS (verified in CI)
 - Docker tag: `tersuite-backend:b2`
