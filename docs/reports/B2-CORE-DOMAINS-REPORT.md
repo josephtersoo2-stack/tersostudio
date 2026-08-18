@@ -4,11 +4,11 @@
 - **Milestone**: B2 — Core Identity, Product, Project, Site, and Conversation Domains
 - **Status**: COMPLETED & VERIFIED
 - **Baseline Git Commit (B2_BASE_SHA)**: `b651815cf380174f8df347a8d754a287f4e9a8bb`
-- **Published B2 Code Git Commit**: `0150f31f111474076d9358dac3f4c7c14bc7f069`
+- **Published B2 Code Git Commit**: `b79073263d646f19f21012b35552470904bd8a68`
 - **Branch**: `feature/b2-core-domains`
-- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32052323974](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32052323974)
+- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32114260215)
 - **CI Status & Conclusion**: Completed / Success (All steps passed)
-- **Test Suite Status**: 234 Passed, 1 Skipped (Live LLM API test without credentials), 0 Failed
+- **Test Suite Status**: 234 Passed, 1 Skipped (live OpenHands integration test skipped: no LLM API key found in CI environment), 0 Failed
 - **Django System Check**: 0 Issues
 - **Migration Integrity Check**: Clean (`makemigrations --check --dry-run` reported No changes detected)
 
@@ -17,6 +17,8 @@
 ## 1. Executive Summary
 
 Milestone B2 establishes the authoritative core domain data model, tenant boundary architecture, product target isolation, metadata-only WordPress site tracking, strictly ordered conversations, and deterministic multi-tenant security foundations for Tersuite AI Studio.
+
+The pre-existing B1 OpenHands runtime adapter is preserved unchanged in B2. No OpenHands conversation creation, execution behavior, or runtime-adapter modification is part of this milestone.
 
 All changes were executed strictly in accordance with:
 - `AGENTS.md`
@@ -108,11 +110,8 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
   - `GenerationStateMachine` automatically clears error and failure fields upon recovery from `RETRYING` to active states.
   - `ExecutionService` preserves execution dispatch and mock runtime compatibility.
 
-### 2.8. Runtime Adapters (`runtime.adapters.openhands`)
-- Implemented robust error classification in `send_task`:
-  - `TimeoutError` $\rightarrow$ `ExecutionStatus.TIMEOUT` / `FailureCategory.TIMEOUT`
-  - `WebSocketConnectionError` / `httpx.ConnectError` $\rightarrow$ `ExecutionStatus.INFRASTRUCTURE_UNAVAILABLE` / `FailureCategory.NETWORK_CONNECTION`
-  - Model / Tool errors $\rightarrow$ `ExecutionStatus.AGENT_FAILED` with appropriate `FailureCategory.MODEL_ERROR` / `TOOL_ERROR`.
+### 2.8. Runtime Boundary Preservation
+The OpenHands runtime adapter and its unit-test boundary are inherited unchanged from the frozen B1 baseline (`b651815cf380174f8df347a8d754a287f4e9a8bb`). B2 does not call OpenHands, create OpenHands conversations, or modify runtime adapter behavior. Runtime execution work remains outside B2.
 
 ### 2.9. Real MigrationExecutor Verification (`tests.migrations.test_b2_core_domain_migration`)
 - Real Django `MigrationExecutor` tests verify bidirectional migration safety on live PostgreSQL test database:
@@ -126,7 +125,7 @@ No out-of-scope features, agent orchestrations, subagents, remote network calls,
 
 ```
 ============================= test session starts =============================
-platform win32 -- Python 3.11.9, pytest-9.1.1, pluggy-1.6.0
+platform win32 -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0
 django: version: 5.1.15, settings: config.settings.test (from ini)
 rootdir: C:\xampp\htdocs\tersostudio new\backend
 collected 235 items
@@ -178,7 +177,7 @@ runtime\tests\test_openhands_adapter.py ...............                  [ 97%]
 runtime\tests\test_runtime_contracts.py .....                            [ 99%]
 tests\integration\test_openhands_live.py s                               [100%]
 
-======================= 234 passed, 1 skipped in 45.69s =======================
+======================= 234 passed, 1 skipped in 72.25s =======================
 ```
 
 ---
