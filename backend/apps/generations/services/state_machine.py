@@ -19,7 +19,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
     GenerationStatus.DRAFT: {
         GenerationStatus.DISCOVERY,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.DISCOVERY: {
         GenerationStatus.SPECIFICATION_DRAFT,
@@ -28,7 +27,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.SPECIFICATION_DRAFT: {
         GenerationStatus.PLAN_DRAFT,
@@ -37,7 +35,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.PLAN_DRAFT: {
         GenerationStatus.AWAITING_APPROVAL,
@@ -46,7 +43,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.AWAITING_APPROVAL: {
         GenerationStatus.APPROVED,
@@ -57,12 +53,10 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.APPROVED: {
         GenerationStatus.SCHEDULED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.SCHEDULED: {
         GenerationStatus.BUILDING,
@@ -71,7 +65,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.BUILDING: {
         GenerationStatus.INTEGRATING,
@@ -80,7 +73,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.INTEGRATING: {
         GenerationStatus.REVIEWING,
@@ -89,7 +81,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.REVIEWING: {
         GenerationStatus.SANDBOX_QA,
@@ -99,7 +90,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.CORRECTING: {
         GenerationStatus.BUILDING,
@@ -110,7 +100,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.SANDBOX_QA: {
         GenerationStatus.RELEASE_CANDIDATE,
@@ -120,7 +109,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.RELEASE_CANDIDATE: {
         GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
@@ -129,7 +117,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL: {
         GenerationStatus.STAGED,
@@ -138,12 +125,10 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.TIMED_OUT,
         GenerationStatus.BLOCKED,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.STAGED: {
         GenerationStatus.ACTIVE,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
     },
     GenerationStatus.ACTIVE: {
         GenerationStatus.ROLLED_BACK,
@@ -162,7 +147,6 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
         GenerationStatus.RELEASE_CANDIDATE,
         GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
         GenerationStatus.CANCELLING,
-        GenerationStatus.CANCELLED,
         GenerationStatus.FAILED,
     },
     GenerationStatus.CANCELLING: {
@@ -171,15 +155,15 @@ VALID_TRANSITIONS: Dict[str, Set[str]] = {
     },
     GenerationStatus.FAILED: {
         GenerationStatus.SCHEDULED,  # Deterministic idempotent retry
-        GenerationStatus.CANCELLED,
+        GenerationStatus.CANCELLING,
     },
     GenerationStatus.TIMED_OUT: {
         GenerationStatus.SCHEDULED,  # Deterministic idempotent retry
-        GenerationStatus.CANCELLED,
+        GenerationStatus.CANCELLING,
     },
     GenerationStatus.BLOCKED: {
         GenerationStatus.SCHEDULED,  # Deterministic idempotent retry
-        GenerationStatus.CANCELLED,
+        GenerationStatus.CANCELLING,
     },
     GenerationStatus.CANCELLED: set(),    # Terminal state
     GenerationStatus.ROLLED_BACK: set(),  # Terminal state
@@ -247,17 +231,6 @@ class GenerationStateMachine:
 
             if metadata_update:
                 locked_gen.metadata.update(metadata_update)
-
-            if "state_history" not in locked_gen.metadata or not isinstance(locked_gen.metadata["state_history"], list):
-                locked_gen.metadata["state_history"] = []
-            locked_gen.metadata["state_history"].append({
-                "from_status": current_status,
-                "to_status": target_status,
-                "timestamp": now.isoformat(),
-                "reason": reason,
-                "failure_category": failure_category,
-                "error_message": error_message,
-            })
 
             # Handle pause & resume bookkeeping
             if target_status == GenerationStatus.PAUSED:

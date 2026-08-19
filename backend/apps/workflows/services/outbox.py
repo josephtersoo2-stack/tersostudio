@@ -31,6 +31,16 @@ class OutboxService:
         now=None,
     ) -> OutboxEvent:
         """Enqueue an event in the transactional outbox table within current transaction."""
+        from django.core.exceptions import ValidationError
+        from apps.core.validators import find_forbidden_json_key
+
+        forbidden = find_forbidden_json_key(payload)
+        if forbidden:
+            raise ValidationError(
+                f"Forbidden secret key '{forbidden}' detected in outbox event payload.",
+                code="forbidden_secret_key",
+            )
+
         current_time = now or timezone.now()
         sanitized = sanitize_payload_for_json(payload)
         outbox_event = OutboxEvent.objects.create(

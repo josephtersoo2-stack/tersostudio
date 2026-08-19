@@ -1,4 +1,4 @@
-"""Workflows domain services."""
+from .cancellation import WorkflowCancellationService
 from .commands import WorkflowCommandService
 from .graph import WorkflowGraphService
 from .leases import WorkflowLeaseService
@@ -7,6 +7,7 @@ from .retries import WorkflowRetryService
 from .scheduler import WorkflowSchedulerService
 
 __all__ = [
+    "WorkflowCancellationService",
     "WorkflowCommandService",
     "WorkflowGraphService",
     "WorkflowLeaseService",
@@ -14,3 +15,4 @@ __all__ = [
     "WorkflowRetryService",
     "WorkflowSchedulerService",
 ]
+

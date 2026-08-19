@@ -94,7 +94,19 @@ class WorkflowRun(OrganizationOwnedModel):
             models.UniqueConstraint(
                 fields=["generation", "run_number"],
                 name="unique_generation_run_number",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["generation"],
+                condition=models.Q(
+                    status__in=[
+                        WorkflowRunStatus.PENDING,
+                        WorkflowRunStatus.RUNNING,
+                        WorkflowRunStatus.PAUSED,
+                        WorkflowRunStatus.CANCELLING,
+                    ]
+                ),
+                name="unique_active_workflow_run_per_generation",
+            ),
         ]
         indexes = [
             models.Index(fields=["organization", "status"]),
@@ -139,11 +151,9 @@ class WorkPackage(OrganizationOwnedModel):
     )
     generation_step = models.ForeignKey(
         GenerationStep,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         related_name="work_packages",
-        help_text="Optional link to parent generation step.",
+        help_text="Link to parent generation step.",
     )
     key = models.CharField(
         max_length=128,
@@ -251,8 +261,10 @@ class WorkPackage(OrganizationOwnedModel):
             )
         ]
         indexes = [
-            models.Index(fields=["status", "priority", "ready_at"]),
-            models.Index(fields=["workflow_run", "status"]),
+            models.Index(fields=["organization", "status"], name="idx_wp_org_status"),
+            models.Index(fields=["workflow_run", "status"], name="idx_wp_run_status"),
+            models.Index(fields=["status", "next_attempt_at"], name="idx_wp_status_next_attempt"),
+            models.Index(fields=["status", "priority", "ready_at"], name="idx_wp_status_prio_ready"),
         ]
 
     def __str__(self) -> str:
@@ -268,6 +280,12 @@ class WorkPackage(OrganizationOwnedModel):
                     "WorkPackage organization must match WorkflowRun organization.",
                     code="organization_mismatch",
                 )
+        if self.generation_step_id and self.workflow_run_id:
+            if self.generation_step.generation_id != self.workflow_run.generation_id:
+                raise ValidationError(
+                    "WorkPackage generation_step must belong to the same generation as its workflow_run.",
+                    code="cross_generation_step",
+                )
 
     def save(self, *args, **kwargs):
         if self.workflow_run_id:
@@ -278,6 +296,26 @@ class WorkPackage(OrganizationOwnedModel):
                     "WorkPackage organization must match WorkflowRun organization.",
                     code="organization_mismatch",
                 )
+            if not self.generation_step_id:
+                from apps.generations.models import GenerationMilestone, GenerationStep
+                step = GenerationStep.objects.filter(generation_id=self.workflow_run.generation_id).order_by("step_number").first()
+                if not step:
+                    m = GenerationMilestone.objects.filter(generation_id=self.workflow_run.generation_id).order_by("sequence").first()
+                    if not m:
+                        m = GenerationMilestone.objects.create(
+                            generation_id=self.workflow_run.generation_id,
+                            name="Default Milestone",
+                            sequence=1,
+                        )
+                    step = GenerationStep.objects.create(
+                        generation_id=self.workflow_run.generation_id,
+                        milestone=m,
+                        step_number=1,
+                        name=f"Step for {self.name}",
+                        agent_role="coder",
+                    )
+                self.generation_step = step
+        self.clean()
         super().save(*args, **kwargs)
 
 
@@ -317,7 +355,11 @@ class WorkPackageDependency(TimeStampedModel):
             models.UniqueConstraint(
                 fields=["predecessor", "successor"],
                 name="unique_package_dependency_edge",
-            )
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(predecessor=models.F("successor")),
+                name="check_no_self_dependency",
+            ),
         ]
 
     def clean(self) -> None:

@@ -233,9 +233,21 @@ VITE_WS_BASE_URL=ws://localhost:8000
 
 ---
 
+## ⚡ Durable Workflow Kernel (B3)
+
+Tersuite AI Studio includes a deterministic, high-concurrency **Durable Workflow Kernel** (`backend/apps/workflows/`) that orchestrates generation milestones and tasks:
+- **DAG Execution & Validation**: Acyclic dependency graph construction, topological sorting, and parallel ready-queue progression.
+- **Worker Leases & Heartbeat Reaper**: Time-bounded worker leases (`WorkPackageLease`) with periodic heartbeat extensions, execution deadlines, and automated stale-lease recovery.
+- **Two-Phase Completion Gate**: Workers submit `CANDIDATE_COMPLETE` payloads with changed-file manifests; progression to `COMPLETED` requires deterministic validation evidence.
+- **Idempotent Control Commands**: `PAUSE`, `RESUME`, `CANCEL`, and `RETRY` operations guarded by tenant-scoped idempotency keys, state versioning, and deterministic exponential backoff.
+- **Transactional Outbox Engine**: ACID transactional event publishing (`OutboxEvent`) with secret-stripping protection and partitioned worker batch claims.
+
+---
+
 ## 🗺️ Roadmap & Documentation
 
 For the comprehensive 25-phase roadmap, architectural milestones, and MVP release strategy, refer to:
 👉 [**docs/TERSUITE-IMPLEMENTATION-ROADMAP.md**](docs/TERSUITE-IMPLEMENTATION-ROADMAP.md)
+👉 [**docs/B3-DURABLE-WORKFLOW-KERNEL-PHASE-SPEC.md**](docs/B3-DURABLE-WORKFLOW-KERNEL-PHASE-SPEC.md)
 👉 [**docs/TERSUITE-CONTROL-CENTER-CC-01-SPEC.md**](docs/TERSUITE-CONTROL-CENTER-CC-01-SPEC.md)
 

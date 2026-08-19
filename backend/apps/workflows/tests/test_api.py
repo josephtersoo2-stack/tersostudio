@@ -5,7 +5,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import User
 from apps.generations.enums import GenerationStatus
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationMilestone, GenerationStep
 from apps.organizations.models import Organization, OrganizationMembership
 from apps.products.models import WordPressProduct
 from apps.projects.models import Project
@@ -22,8 +22,10 @@ def multi_tenant_api_setup(db):
     prod1 = WordPressProduct.objects.create(organization=org1, display_name="Prod 1", slug="prod-1", created_by=u1)
     proj1 = Project.objects.create(organization=org1, product=prod1, name="Proj 1", slug="proj-1", created_by=u1)
     gen1 = Generation.objects.create(organization=org1, project=proj1, prompt="Gen 1", status=GenerationStatus.BUILDING, created_by=u1)
+    m1 = GenerationMilestone.objects.create(generation=gen1, name="M1", sequence=1)
+    s1 = GenerationStep.objects.create(generation=gen1, milestone=m1, step_number=1, name="S1", agent_role="coder")
     run1 = WorkflowRun.objects.create(organization=org1, generation=gen1, run_number=1, status=WorkflowRunStatus.RUNNING, created_by=u1)
-    pkg1 = WorkPackage.objects.create(organization=org1, workflow_run=run1, key="pkg_1", name="Task 1", created_by=u1)
+    pkg1 = WorkPackage.objects.create(organization=org1, workflow_run=run1, generation_step=s1, key="pkg_1", name="Task 1", created_by=u1)
     att1 = WorkPackageAttempt.objects.create(work_package=pkg1, attempt_number=1, worker_id="w1")
 
     # Tenant 2
@@ -33,8 +35,10 @@ def multi_tenant_api_setup(db):
     prod2 = WordPressProduct.objects.create(organization=org2, display_name="Prod 2", slug="prod-2", created_by=u2)
     proj2 = Project.objects.create(organization=org2, product=prod2, name="Proj 2", slug="proj-2", created_by=u2)
     gen2 = Generation.objects.create(organization=org2, project=proj2, prompt="Gen 2", status=GenerationStatus.BUILDING, created_by=u2)
+    m2 = GenerationMilestone.objects.create(generation=gen2, name="M2", sequence=1)
+    s2 = GenerationStep.objects.create(generation=gen2, milestone=m2, step_number=1, name="S2", agent_role="coder")
     run2 = WorkflowRun.objects.create(organization=org2, generation=gen2, run_number=1, status=WorkflowRunStatus.RUNNING, created_by=u2)
-    pkg2 = WorkPackage.objects.create(organization=org2, workflow_run=run2, key="pkg_2", name="Task 2", created_by=u2)
+    pkg2 = WorkPackage.objects.create(organization=org2, workflow_run=run2, generation_step=s2, key="pkg_2", name="Task 2", created_by=u2)
     att2 = WorkPackageAttempt.objects.create(work_package=pkg2, attempt_number=1, worker_id="w2")
 
     return u1, org1, run1, pkg1, att1, u2, org2, run2, pkg2, att2

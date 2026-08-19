@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.generations.enums import GenerationStatus
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationMilestone, GenerationStep
 from apps.organizations.models import Organization
 from apps.products.models import WordPressProduct
 from apps.projects.models import Project
@@ -33,10 +33,13 @@ def lease_setup(db):
     prod = WordPressProduct.objects.create(organization=org, display_name="Plugin A", slug="plugin-a", created_by=user)
     proj = Project.objects.create(organization=org, product=prod, name="Proj A", slug="proj-a", created_by=user)
     gen = Generation.objects.create(organization=org, project=proj, prompt="Build WP plugin", status=GenerationStatus.BUILDING, created_by=user)
+    milestone = GenerationMilestone.objects.create(generation=gen, name="Milestone 1", sequence=1)
+    step = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=1, name="Step 1", agent_role="coder")
     run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, status=WorkflowRunStatus.RUNNING, created_by=user)
     pkg = WorkPackage.objects.create(
         organization=org,
         workflow_run=run,
+        generation_step=step,
         key="pkg_1",
         name="Task 1",
         status=WorkPackageStatus.RUNNING,
@@ -51,6 +54,7 @@ def lease_setup(db):
         attempt_number=1,
         status=AttemptStatus.RUNNING,
         worker_id="worker_01",
+        started_at=timezone.now(),
     )
     return org, user, gen, run, pkg, attempt
 
@@ -61,32 +65,56 @@ class TestWorkflowLeaseService:
 
     def test_acquire_and_heartbeat_lease(self, lease_setup):
         org, user, gen, run, pkg, attempt = lease_setup
-        now = timezone.now()
+        now = attempt.started_at
 
         lease = WorkflowLeaseService.acquire_lease(
             work_package=pkg,
             attempt=attempt,
             worker_id="worker_01",
-            duration_seconds=60,
+            duration_seconds=30,
             now=now,
         )
         assert lease.worker_id == "worker_01"
-        assert lease.expires_at == now + timedelta(seconds=60)
+        assert lease.expires_at == now + timedelta(seconds=30)
 
         # Heartbeat extension
         heartbeat_time = now + timedelta(seconds=20)
         extended_lease = WorkflowLeaseService.heartbeat(
             lease_token=lease.lease_token,
             attempt_id=attempt.id,
-            duration_seconds=60,
+            duration_seconds=30,
             now=heartbeat_time,
         )
-        assert extended_lease.expires_at == heartbeat_time + timedelta(seconds=60)
+        assert extended_lease.expires_at == heartbeat_time + timedelta(seconds=30)
         assert extended_lease.heartbeat_at == heartbeat_time
+
+    def test_heartbeat_capped_by_package_execution_deadline(self, lease_setup):
+        org, user, gen, run, pkg, attempt = lease_setup
+        now = attempt.started_at
+        pkg.timeout_seconds = 35
+        pkg.save()
+
+        lease = WorkflowLeaseService.acquire_lease(
+            work_package=pkg,
+            attempt=attempt,
+            worker_id="worker_01",
+            duration_seconds=20,
+            now=now,
+        )
+
+        # Heartbeat at T+15s with duration 30s. Would be T+45s, but effective expires_at must cap at T+35s (deadline)
+        heartbeat_time = now + timedelta(seconds=15)
+        extended_lease = WorkflowLeaseService.heartbeat(
+            lease_token=lease.lease_token,
+            attempt_id=attempt.id,
+            duration_seconds=30,
+            now=heartbeat_time,
+        )
+        assert extended_lease.expires_at == now + timedelta(seconds=35)
 
     def test_heartbeat_fails_on_expired_lease(self, lease_setup):
         org, user, gen, run, pkg, attempt = lease_setup
-        now = timezone.now()
+        now = attempt.started_at
 
         lease = WorkflowLeaseService.acquire_lease(
             work_package=pkg,
@@ -107,7 +135,7 @@ class TestWorkflowLeaseService:
 
     def test_reap_expired_leases_and_schedule_retry(self, lease_setup):
         org, user, gen, run, pkg, attempt = lease_setup
-        now = timezone.now()
+        now = attempt.started_at
 
         lease = WorkflowLeaseService.acquire_lease(
             work_package=pkg,

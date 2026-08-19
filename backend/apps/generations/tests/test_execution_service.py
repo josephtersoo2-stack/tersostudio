@@ -162,7 +162,7 @@ class ExecutionServiceTests(TestCase):
 
         self.generation.refresh_from_db()
         self.assertEqual(self.generation.status, GenerationStatus.FAILED)
-        self.assertEqual(self.generation.metadata.get("state_history")[-1].get("failure_category"), "TIMEOUT")
+        self.assertEqual(self.generation.failure_category, "TIMEOUT")
 
     def test_run_failure_classification_network(self):
         """Verify network execution failure properly records NETWORK_CONNECTION category and retryable=True."""
@@ -187,7 +187,7 @@ class ExecutionServiceTests(TestCase):
 
         self.generation.refresh_from_db()
         self.assertEqual(self.generation.status, GenerationStatus.FAILED)
-        self.assertEqual(self.generation.metadata.get("state_history")[-1].get("failure_category"), "NETWORK_CONNECTION")
+        self.assertEqual(self.generation.failure_category, "NETWORK_CONNECTION")
 
     def test_run_failure_classification_model_error(self):
         """Verify model error failure properly records MODEL_ERROR category and retryable=False."""

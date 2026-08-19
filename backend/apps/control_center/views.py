@@ -550,9 +550,9 @@ class ControlCenterGenerationCancelView(APIView):
 
         with transaction.atomic():
             try:
-                updated_gen = GenerationStateMachine.transition(
+                cancelling_gen = GenerationStateMachine.transition(
                     generation=generation,
-                    target_status=GenerationStatus.CANCELLED,
+                    target_status=GenerationStatus.CANCELLING,
                     reason=reason,
                     actor=request.user,
                 )
@@ -579,6 +579,14 @@ class ControlCenterGenerationCancelView(APIView):
                 status=AgentRunStatus.CANCELLED,
                 completed_at=now,
                 updated_at=now,
+            )
+
+            # Finalize cancellation
+            updated_gen = GenerationStateMachine.transition(
+                generation=cancelling_gen,
+                target_status=GenerationStatus.CANCELLED,
+                reason="Control center cancellation finalized.",
+                actor=request.user,
             )
 
         # Broadcast realtime cancellation event

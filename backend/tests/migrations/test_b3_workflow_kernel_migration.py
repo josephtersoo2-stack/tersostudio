@@ -157,6 +157,10 @@ class B3WorkflowKernelMigrationExecutorTests(TransactionTestCase):
             assert t_plan.sequence == 1
             assert t_plan.to_status == "PLAN_DRAFT"
 
+            NewStep = new_apps.get_model("generations", "GenerationStep")
+            step_migrated = NewStep.objects.get(id=step.id)
+            assert step_migrated.milestone_id is not None
+
             # Verify workflows models are operational
             wf_run = NewWorkflowRun.objects.create(
                 generation=gen_plan_migrated,
@@ -166,6 +170,7 @@ class B3WorkflowKernelMigrationExecutorTests(TransactionTestCase):
             )
             pkg = NewWorkPackage.objects.create(
                 workflow_run=wf_run,
+                generation_step=step_migrated,
                 organization_id=wf_run.organization_id,
                 key="pkg_1",
                 name="Architecture Task",
@@ -173,6 +178,10 @@ class B3WorkflowKernelMigrationExecutorTests(TransactionTestCase):
             )
             assert wf_run.id is not None
             assert pkg.id is not None
+            assert pkg.generation_step_id == step_migrated.id
+
+            pkg.delete()
+            wf_run.delete()
 
             # 5. Migrate backward to B2 baseline
             executor = self.get_executor()

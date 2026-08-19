@@ -1,5 +1,6 @@
 """Distributed lease management, heartbeat renewal, and stale lease reaping."""
 from datetime import timedelta
+import logging
 from typing import Optional
 import uuid
 from django.conf import settings
@@ -7,10 +8,12 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
+from apps.generations.enums import GenerationStatus
 from apps.realtime.events import EventType
 from apps.workflows.enums import (
     AttemptStatus,
     LeaseReleaseReason,
+    WorkflowRunStatus,
     WorkPackageStatus,
 )
 from apps.workflows.models import (
@@ -18,8 +21,11 @@ from apps.workflows.models import (
     WorkPackageAttempt,
     WorkPackageLease,
 )
+from .cancellation import WorkflowCancellationService
 from .outbox import OutboxService
 from .retries import WorkflowRetryService
+
+logger = logging.getLogger("tersuite.workflows.leases")
 
 
 class WorkflowLeaseService:
@@ -36,7 +42,11 @@ class WorkflowLeaseService:
     ) -> WorkPackageLease:
         """Create and grant an exclusive execution lease for a work package attempt."""
         current_time = now or timezone.now()
-        duration = duration_seconds or getattr(settings, "WORKFLOW_LEASE_SECONDS", 60)
+        duration = duration_seconds or getattr(settings, "WORKFLOW_LEASE_SECONDS", 300)
+
+        # Cap lease duration by absolute work package execution deadline
+        deadline = attempt.started_at + timedelta(seconds=work_package.timeout_seconds)
+        effective_expires_at = min(current_time + timedelta(seconds=duration), deadline)
 
         with transaction.atomic():
             # Check for existing active lease
@@ -61,7 +71,7 @@ class WorkflowLeaseService:
                 worker_id=worker_id,
                 acquired_at=current_time,
                 heartbeat_at=current_time,
-                expires_at=current_time + timedelta(seconds=duration),
+                expires_at=effective_expires_at,
             )
             return lease
 
@@ -75,7 +85,7 @@ class WorkflowLeaseService:
     ) -> WorkPackageLease:
         """Extend an active lease's expiry and record worker heartbeat."""
         current_time = now or timezone.now()
-        duration = duration_seconds or getattr(settings, "WORKFLOW_LEASE_SECONDS", 60)
+        duration = duration_seconds or getattr(settings, "WORKFLOW_LEASE_SECONDS", 300)
 
         with transaction.atomic():
             lease = (
@@ -107,8 +117,12 @@ class WorkflowLeaseService:
                     code="lease_expired",
                 )
 
+            # Cap heartbeat extension by package timeout deadline
+            deadline = lease.attempt.started_at + timedelta(seconds=lease.work_package.timeout_seconds)
+            effective_expires_at = min(current_time + timedelta(seconds=duration), deadline)
+
             lease.heartbeat_at = current_time
-            lease.expires_at = current_time + timedelta(seconds=duration)
+            lease.expires_at = effective_expires_at
             lease.save(update_fields=["heartbeat_at", "expires_at", "updated_at"])
 
             WorkPackageAttempt.objects.filter(id=attempt_id).update(
@@ -195,22 +209,39 @@ class WorkflowLeaseService:
 
                 if package:
                     package.state_version += 1
-                    if package.cancel_requested_at:
+                    run = package.workflow_run
+                    gen = run.generation
+
+                    is_cancelling = (
+                        package.cancel_requested_at
+                        or run.status == WorkflowRunStatus.CANCELLING
+                        or gen.status == GenerationStatus.CANCELLING
+                    )
+
+                    if is_cancelling:
                         package.status = WorkPackageStatus.CANCELLED
-                        package.save(update_fields=["status", "state_version", "updated_at"])
+                        package.completed_at = current_time
+                        package.save(update_fields=["status", "completed_at", "state_version", "updated_at"])
                         OutboxService.enqueue_event(
                             organization=package.organization,
-                            generation=package.workflow_run.generation,
+                            generation=gen,
                             aggregate_type="work_package",
                             aggregate_id=str(package.id),
                             event_type=EventType.WORK_PACKAGE_CANCELLED,
                             payload={"work_package_id": str(package.id), "key": package.key},
+                            now=current_time,
+                        )
+                        # Deterministically finalize if all active leases are now released
+                        WorkflowCancellationService.finalize_if_quiescent(
+                            generation_id=gen.id,
+                            workflow_run_id=run.id,
+                            reason="Cancellation finalized after lease expiry reap.",
                         )
                     elif WorkflowRetryService.should_retry(package, attempt):
                         WorkflowRetryService.schedule_retry(package, now=current_time)
                         OutboxService.enqueue_event(
                             organization=package.organization,
-                            generation=package.workflow_run.generation,
+                            generation=gen,
                             aggregate_type="work_package",
                             aggregate_id=str(package.id),
                             event_type=EventType.WORK_PACKAGE_RETRY_SCHEDULED,
@@ -219,6 +250,7 @@ class WorkflowLeaseService:
                                 "key": package.key,
                                 "next_attempt_at": package.next_attempt_at.isoformat() if package.next_attempt_at else None,
                             },
+                            now=current_time,
                         )
                     else:
                         package.status = WorkPackageStatus.TIMED_OUT
@@ -235,11 +267,12 @@ class WorkflowLeaseService:
                         ])
                         OutboxService.enqueue_event(
                             organization=package.organization,
-                            generation=package.workflow_run.generation,
+                            generation=gen,
                             aggregate_type="work_package",
                             aggregate_id=str(package.id),
                             event_type=EventType.WORK_PACKAGE_TIMED_OUT,
                             payload={"work_package_id": str(package.id), "key": package.key},
+                            now=current_time,
                         )
 
                 reaped_count += 1

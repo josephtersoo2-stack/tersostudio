@@ -9,34 +9,31 @@ from .services.scheduler import WorkflowSchedulerService
 logger = logging.getLogger("tersuite.workflows.tasks")
 
 
-@shared_task(bind=True, name="apps.workflows.tasks.workflow_scheduler_tick")
+@shared_task(bind=True, max_retries=0, name="apps.workflows.tasks.workflow_scheduler_tick")
 def workflow_scheduler_tick(self) -> int:
     """Periodic task evaluating DAG readiness and advancing pending/retry packages."""
     try:
-        count = WorkflowSchedulerService.tick()
-        return count
+        return WorkflowSchedulerService.tick()
     except Exception as exc:
-        logger.exception("Error in workflow_scheduler_tick: %s", exc)
-        return 0
+        logger.exception("Unexpected failure in workflow_scheduler_tick: %s", exc)
+        raise
 
 
-@shared_task(bind=True, name="apps.workflows.tasks.workflow_reap_expired_leases")
+@shared_task(bind=True, max_retries=0, name="apps.workflows.tasks.workflow_reap_expired_leases")
 def workflow_reap_expired_leases(self) -> int:
     """Periodic task reaping expired worker leases and scheduling retries."""
     try:
-        count = WorkflowLeaseService.reap_expired_leases()
-        return count
+        return WorkflowLeaseService.reap_expired_leases()
     except Exception as exc:
-        logger.exception("Error in workflow_reap_expired_leases: %s", exc)
-        return 0
+        logger.exception("Unexpected failure in workflow_reap_expired_leases: %s", exc)
+        raise
 
 
-@shared_task(bind=True, name="apps.workflows.tasks.workflow_dispatch_outbox")
+@shared_task(bind=True, max_retries=0, name="apps.workflows.tasks.workflow_dispatch_outbox")
 def workflow_dispatch_outbox(self) -> int:
     """Periodic task claiming and dispatching transactional outbox events to Channels."""
     try:
-        count = OutboxService.publish_batch()
-        return count
+        return OutboxService.publish_batch()
     except Exception as exc:
-        logger.exception("Error in workflow_dispatch_outbox: %s", exc)
-        return 0
+        logger.exception("Unexpected failure in workflow_dispatch_outbox: %s", exc)
+        raise

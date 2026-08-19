@@ -225,3 +225,25 @@ class GenerationStateMachineTests(TestCase):
         )
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK)
         self.assertEqual(cancel_resp.data["generation"]["status"], "CANCELLED")
+
+    def test_legacy_metadata_state_history_preserved_without_mutation(self):
+        """Verify legacy metadata['state_history'] is preserved untouched and not appended on B3 transitions."""
+        legacy_history = [
+            {"from_status": "DRAFT", "to_status": "SPECIFICATION", "timestamp": "2026-08-01T00:00:00Z"}
+        ]
+        self.generation.metadata["state_history"] = list(legacy_history)
+        self.generation.save()
+
+        initial_transitions_count = self.generation.state_transitions.count()
+        initial_version = self.generation.state_version
+
+        # Perform valid B3 transition
+        gen = GenerationStateMachine.transition(self.generation, target_status=GenerationStatus.DISCOVERY, reason="Starting discovery")
+
+        # Assert metadata is structurally identical / untouched
+        self.assertEqual(gen.metadata["state_history"], legacy_history)
+        # Assert one GenerationStateTransition was created
+        self.assertEqual(gen.state_transitions.count(), initial_transitions_count + 1)
+        # Assert state version incremented once
+        self.assertEqual(gen.state_version, initial_version + 1)
+

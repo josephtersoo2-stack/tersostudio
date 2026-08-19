@@ -1,6 +1,7 @@
 """Tests for OutboxService transactional enqueue, batch claim, and durable publishing."""
 from unittest.mock import MagicMock, patch
 import pytest
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 
 from apps.accounts.models import User
@@ -49,6 +50,33 @@ class TestOutboxService:
         # Second claim should skip already claimed row
         claimed2 = OutboxService.claim_batch(batch_size=10, claim_seconds=60)
         assert len(claimed2) == 0
+
+    def test_enqueue_rejects_forbidden_secrets(self, outbox_setup):
+        org, user, gen = outbox_setup
+
+        # Reject payload with token
+        with pytest.raises(ValidationError) as exc:
+            OutboxService.enqueue_event(
+                organization=org,
+                generation=gen,
+                aggregate_type="work_package",
+                aggregate_id=str(gen.id),
+                event_type="work_package.leased",
+                payload={"lease_token": "secret-123"},
+            )
+        assert exc.value.code == "forbidden_secret_key"
+
+        # Reject payload with api_key
+        with pytest.raises(ValidationError) as exc:
+            OutboxService.enqueue_event(
+                organization=org,
+                generation=gen,
+                aggregate_type="generation",
+                aggregate_id=str(gen.id),
+                event_type="generation.status_changed",
+                payload={"config": {"api_key": "sk-live-123"}},
+            )
+        assert exc.value.code == "forbidden_secret_key"
 
     @patch("apps.workflows.services.outbox.GenerationEventPublisher.publish_durable")
     def test_publish_batch_success(self, mock_publish, outbox_setup):

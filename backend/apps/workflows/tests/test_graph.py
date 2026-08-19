@@ -3,7 +3,7 @@ import pytest
 from django.core.exceptions import ValidationError
 
 from apps.accounts.models import User
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationMilestone, GenerationStep
 from apps.organizations.models import Organization
 from apps.products.models import WordPressProduct
 from apps.projects.models import Project
@@ -19,12 +19,17 @@ def run_and_packages(db):
     prod = WordPressProduct.objects.create(organization=org, display_name="Plugin A", slug="plugin-a", created_by=user)
     proj = Project.objects.create(organization=org, product=prod, name="Proj A", slug="proj-a", created_by=user)
     gen = Generation.objects.create(organization=org, project=proj, prompt="Build WP plugin", created_by=user)
+    milestone = GenerationMilestone.objects.create(generation=gen, name="Milestone 1", sequence=1)
+    step1 = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=1, name="Step 1", agent_role="architect")
+    step2 = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=2, name="Step 2", agent_role="coder")
+    step3 = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=3, name="Step 3", agent_role="coder")
+    step4 = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=4, name="Step 4", agent_role="security")
     run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
 
-    p1 = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_1", name="Task 1", priority=100, created_by=user)
-    p2 = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_2", name="Task 2", priority=90, created_by=user)
-    p3 = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_3", name="Task 3", priority=80, created_by=user)
-    p4 = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_4", name="Task 4", priority=70, created_by=user)
+    p1 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step1, key="pkg_1", name="Task 1", priority=100, created_by=user)
+    p2 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step2, key="pkg_2", name="Task 2", priority=90, created_by=user)
+    p3 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step3, key="pkg_3", name="Task 3", priority=80, created_by=user)
+    p4 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step4, key="pkg_4", name="Task 4", priority=70, created_by=user)
 
     return run, p1, p2, p3, p4
 

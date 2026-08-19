@@ -26,6 +26,11 @@ class EventType:
     # Workflow Run events
     WORKFLOW_RUN_CREATED = "workflow.run_created"
     WORKFLOW_RUN_STATUS_CHANGED = "workflow.run_status_changed"
+    WORKFLOW_RUN_STARTED = "workflow.run_started"
+    WORKFLOW_RUN_PAUSED = "workflow.run_paused"
+    WORKFLOW_RUN_CANCELLED = "workflow.run_cancelled"
+    WORKFLOW_RUN_COMPLETED = "workflow.run_completed"
+    WORKFLOW_RUN_FAILED = "workflow.run_failed"
 
     # Work Package events
     WORK_PACKAGE_READY = "work_package.ready"

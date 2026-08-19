@@ -107,4 +107,4 @@ jobs:
         run: docker compose config
 
       - name: Build Docker Container Image
-        run: docker build -t tersuite-backend:b2 .
+        run: docker build -t tersuite-backend:b3 .

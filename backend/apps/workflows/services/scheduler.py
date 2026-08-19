@@ -1,4 +1,5 @@
 """Durable workflow scheduler managing DAG readiness, worker claims, and validated completion."""
+from datetime import timedelta
 from typing import Any, Dict, Optional, Tuple
 import uuid
 from django.conf import settings
@@ -22,12 +23,47 @@ from apps.workflows.models import (
     WorkPackageDependency,
     WorkPackageLease,
 )
+from .cancellation import WorkflowCancellationService
 from .leases import WorkflowLeaseService
 from .outbox import OutboxService
+from .retries import WorkflowRetryService
+
+UNCLAIMABLE_GENERATION_STATUSES = frozenset([
+    GenerationStatus.PAUSED,
+    GenerationStatus.CANCELLING,
+    GenerationStatus.CANCELLED,
+    GenerationStatus.FAILED,
+    GenerationStatus.TIMED_OUT,
+    GenerationStatus.BLOCKED,
+    GenerationStatus.ROLLED_BACK,
+    GenerationStatus.SUPERSEDED,
+    GenerationStatus.ACTIVE,
+    GenerationStatus.STAGED,
+    GenerationStatus.RELEASE_CANDIDATE,
+])
+
+UNCLAIMABLE_RUN_STATUSES = frozenset([
+    WorkflowRunStatus.PAUSED,
+    WorkflowRunStatus.CANCELLING,
+    WorkflowRunStatus.CANCELLED,
+    WorkflowRunStatus.FAILED,
+    WorkflowRunStatus.TIMED_OUT,
+    WorkflowRunStatus.COMPLETED,
+])
 
 
 class WorkflowSchedulerService:
     """Scheduler engine driving work package readiness, worker leases, and task lifecycle."""
+
+    @classmethod
+    def is_claimable(cls, workflow_run: WorkflowRun, generation: GenerationStatus) -> bool:
+        """Centralized check for whether a generation and workflow run are in an execution-claimable state."""
+        if workflow_run.status in UNCLAIMABLE_RUN_STATUSES:
+            return False
+        gen_status = getattr(generation, "status", generation)
+        if gen_status in UNCLAIMABLE_GENERATION_STATUSES:
+            return False
+        return True
 
     @classmethod
     def tick(
@@ -61,21 +97,8 @@ class WorkflowSchedulerService:
 
                 generation = locked_run.generation
 
-                # Check if execution is blocked by pause/cancellation/terminal state
-                if locked_run.status in [
-                    WorkflowRunStatus.PAUSED,
-                    WorkflowRunStatus.CANCELLING,
-                    WorkflowRunStatus.CANCELLED,
-                    WorkflowRunStatus.FAILED,
-                    WorkflowRunStatus.TIMED_OUT,
-                    WorkflowRunStatus.COMPLETED,
-                ] or generation.status in [
-                    GenerationStatus.PAUSED,
-                    GenerationStatus.CANCELLING,
-                    GenerationStatus.CANCELLED,
-                    GenerationStatus.FAILED,
-                    GenerationStatus.TIMED_OUT,
-                ]:
+                # Check if execution is blocked
+                if not cls.is_claimable(locked_run, generation):
                     locked_run.last_scheduler_heartbeat_at = current_time
                     locked_run.save(update_fields=["last_scheduler_heartbeat_at", "updated_at"])
                     continue
@@ -83,14 +106,16 @@ class WorkflowSchedulerService:
                 if locked_run.status == WorkflowRunStatus.PENDING:
                     locked_run.status = WorkflowRunStatus.RUNNING
                     locked_run.started_at = locked_run.started_at or current_time
-                    locked_run.save(update_fields=["status", "started_at", "updated_at"])
+                    locked_run.state_version += 1
+                    locked_run.save(update_fields=["status", "started_at", "state_version", "updated_at"])
                     OutboxService.enqueue_event(
                         organization=locked_run.organization,
                         generation=generation,
                         aggregate_type="workflow_run",
                         aggregate_id=str(locked_run.id),
                         event_type=EventType.WORKFLOW_RUN_STATUS_CHANGED,
-                        payload={"workflow_run_id": locked_run.id, "status": locked_run.status},
+                        payload={"workflow_run_id": str(locked_run.id), "status": locked_run.status},
+                        now=current_time,
                     )
 
                 # Process packages in this run
@@ -103,7 +128,6 @@ class WorkflowSchedulerService:
                 deps = list(
                     WorkPackageDependency.objects.filter(
                         workflow_run=locked_run,
-                        dependency_type=DependencyType.HARD,
                     )
                 )
 
@@ -129,6 +153,7 @@ class WorkflowSchedulerService:
                                 aggregate_id=str(pkg.id),
                                 event_type=EventType.WORK_PACKAGE_READY,
                                 payload={"work_package_id": str(pkg.id), "key": pkg.key},
+                                now=current_time,
                             )
                             advanced_count += 1
                         else:
@@ -145,6 +170,7 @@ class WorkflowSchedulerService:
                                     aggregate_id=str(pkg.id),
                                     event_type=EventType.WORK_PACKAGE_READY,
                                     payload={"work_package_id": str(pkg.id), "key": pkg.key},
+                                    now=current_time,
                                 )
                                 advanced_count += 1
                             elif any(st in [WorkPackageStatus.FAILED, WorkPackageStatus.TIMED_OUT, WorkPackageStatus.BLOCKED, WorkPackageStatus.CANCELLED] for st in pred_statuses):
@@ -160,6 +186,7 @@ class WorkflowSchedulerService:
                                     aggregate_id=str(pkg.id),
                                     event_type=EventType.WORK_PACKAGE_FAILED,
                                     payload={"work_package_id": str(pkg.id), "key": pkg.key},
+                                    now=current_time,
                                 )
                                 advanced_count += 1
 
@@ -177,6 +204,7 @@ class WorkflowSchedulerService:
                                 aggregate_id=str(pkg.id),
                                 event_type=EventType.WORK_PACKAGE_READY,
                                 payload={"work_package_id": str(pkg.id), "key": pkg.key},
+                                now=current_time,
                             )
                             advanced_count += 1
 
@@ -193,7 +221,8 @@ class WorkflowSchedulerService:
                         aggregate_type="workflow_run",
                         aggregate_id=str(locked_run.id),
                         event_type=EventType.WORKFLOW_RUN_STATUS_CHANGED,
-                        payload={"workflow_run_id": locked_run.id, "status": locked_run.status},
+                        payload={"workflow_run_id": str(locked_run.id), "status": locked_run.status},
+                        now=current_time,
                     )
 
                 locked_run.last_scheduler_heartbeat_at = current_time
@@ -231,20 +260,8 @@ class WorkflowSchedulerService:
             run = package.workflow_run
             generation = run.generation
 
-            # Re-verify runnable state
-            if run.status in [
-                WorkflowRunStatus.PAUSED,
-                WorkflowRunStatus.CANCELLING,
-                WorkflowRunStatus.CANCELLED,
-                WorkflowRunStatus.FAILED,
-                WorkflowRunStatus.TIMED_OUT,
-            ] or generation.status in [
-                GenerationStatus.PAUSED,
-                GenerationStatus.CANCELLING,
-                GenerationStatus.CANCELLED,
-                GenerationStatus.FAILED,
-                GenerationStatus.TIMED_OUT,
-            ]:
+            # Re-verify runnable state using centralized claimability check
+            if not cls.is_claimable(run, generation):
                 return None
 
             package.attempt_count += 1
@@ -266,10 +283,10 @@ class WorkflowSchedulerService:
                 work_package=package,
                 attempt=attempt,
                 worker_id=worker_id,
-                duration_seconds=package.timeout_seconds,
                 now=current_time,
             )
 
+            # Enqueue safe events WITHOUT lease_token
             OutboxService.enqueue_event(
                 organization=package.organization,
                 generation=generation,
@@ -280,8 +297,10 @@ class WorkflowSchedulerService:
                     "work_package_id": str(package.id),
                     "key": package.key,
                     "worker_id": worker_id,
-                    "lease_token": str(lease.lease_token),
+                    "attempt_id": str(attempt.id),
+                    "attempt_number": attempt.attempt_number,
                 },
+                now=current_time,
             )
             OutboxService.enqueue_event(
                 organization=package.organization,
@@ -295,6 +314,7 @@ class WorkflowSchedulerService:
                     "attempt_number": attempt.attempt_number,
                     "worker_id": worker_id,
                 },
+                now=current_time,
             )
 
             return package, attempt, lease
@@ -307,34 +327,56 @@ class WorkflowSchedulerService:
         result_payload: Dict[str, Any],
         now=None,
     ) -> WorkPackage:
-        """Worker registers candidate completion for an attempt; releases lease."""
+        """Worker registers candidate completion for an attempt; securely releases lease."""
         current_time = now or timezone.now()
 
         with transaction.atomic():
-            WorkflowLeaseService.release_lease(
-                lease_token=lease_token,
-                reason=LeaseReleaseReason.COMPLETED,
-                now=current_time,
+            # 1. Lock active lease by token
+            lease = (
+                WorkPackageLease.objects.filter(lease_token=lease_token)
+                .select_for_update()
+                .first()
             )
+            if not lease or lease.released_at:
+                raise ValidationError("Valid active lease token is required.", code="invalid_lease_token")
+
+            if lease.is_expired(current_time):
+                raise ValidationError("Lease has expired.", code="lease_expired")
+
+            # 2. Strict token-attempt binding
+            if lease.attempt_id != attempt_id:
+                raise ValidationError(
+                    "Lease token does not match specified attempt ID.",
+                    code="lease_attempt_mismatch",
+                )
 
             attempt = (
                 WorkPackageAttempt.objects.filter(id=attempt_id)
                 .select_for_update()
                 .first()
             )
-            if not attempt:
-                raise ValidationError("Attempt not found.", code="attempt_not_found")
+            if not attempt or attempt.work_package_id != lease.work_package_id:
+                raise ValidationError("Attempt does not match lease package.", code="attempt_mismatch")
 
+            package = (
+                WorkPackage.objects.filter(id=lease.work_package_id)
+                .select_for_update()
+                .first()
+            )
+            if not package:
+                raise ValidationError("Package not found.", code="package_not_found")
+
+            # 3. Release lease
+            lease.released_at = current_time
+            lease.release_reason = LeaseReleaseReason.COMPLETED
+            lease.save(update_fields=["released_at", "release_reason", "updated_at"])
+
+            # 4. Update attempt & package
             attempt.status = AttemptStatus.CANDIDATE_COMPLETE
             attempt.result_payload = result_payload or {}
             attempt.completed_at = current_time
             attempt.save(update_fields=["status", "result_payload", "completed_at", "updated_at"])
 
-            package = (
-                WorkPackage.objects.filter(id=attempt.work_package_id)
-                .select_for_update()
-                .first()
-            )
             package.status = WorkPackageStatus.CANDIDATE_COMPLETE
             package.result_payload = result_payload or {}
             package.state_version += 1
@@ -351,7 +393,136 @@ class WorkflowSchedulerService:
                     "key": package.key,
                     "attempt_id": str(attempt.id),
                 },
+                now=current_time,
             )
+
+            return package
+
+    @classmethod
+    def record_attempt_failure(
+        cls,
+        attempt_id: int,
+        lease_token: uuid.UUID,
+        failure_category: str,
+        error_details: Dict[str, Any],
+        retryable: bool = True,
+        now=None,
+    ) -> WorkPackage:
+        """Worker registers execution failure for an attempt; evaluates retries or marks failed."""
+        current_time = now or timezone.now()
+
+        with transaction.atomic():
+            # 1. Lock active lease by token
+            lease = (
+                WorkPackageLease.objects.filter(lease_token=lease_token)
+                .select_for_update()
+                .first()
+            )
+            if not lease or lease.released_at:
+                raise ValidationError("Valid active lease token is required.", code="invalid_lease_token")
+
+            # 2. Strict token-attempt binding
+            if lease.attempt_id != attempt_id:
+                raise ValidationError(
+                    "Lease token does not match specified attempt ID.",
+                    code="lease_attempt_mismatch",
+                )
+
+            attempt = (
+                WorkPackageAttempt.objects.filter(id=attempt_id)
+                .select_for_update()
+                .first()
+            )
+            if not attempt or attempt.work_package_id != lease.work_package_id:
+                raise ValidationError("Attempt does not match lease package.", code="attempt_mismatch")
+
+            package = (
+                WorkPackage.objects.filter(id=lease.work_package_id)
+                .select_for_update()
+                .first()
+            )
+            if not package:
+                raise ValidationError("Package not found.", code="package_not_found")
+
+            # 3. Release lease
+            lease.released_at = current_time
+            lease.release_reason = LeaseReleaseReason.FAILED
+            lease.save(update_fields=["released_at", "release_reason", "updated_at"])
+
+            # 4. Update attempt
+            attempt.status = AttemptStatus.FAILED
+            attempt.failure_category = failure_category or "UNKNOWN"
+            attempt.error_details = error_details or {}
+            attempt.retryable = retryable
+            attempt.completed_at = current_time
+            attempt.save(update_fields=["status", "failure_category", "error_details", "retryable", "completed_at", "updated_at"])
+
+            # 5. Handle cancellation or retry vs failure
+            run = package.workflow_run
+            gen = run.generation
+            is_cancelling = (
+                package.cancel_requested_at
+                or run.status == WorkflowRunStatus.CANCELLING
+                or gen.status == GenerationStatus.CANCELLING
+            )
+
+            package.state_version += 1
+
+            if is_cancelling:
+                package.status = WorkPackageStatus.CANCELLED
+                package.completed_at = current_time
+                package.save(update_fields=["status", "completed_at", "state_version", "updated_at"])
+                OutboxService.enqueue_event(
+                    organization=package.organization,
+                    generation=gen,
+                    aggregate_type="work_package",
+                    aggregate_id=str(package.id),
+                    event_type=EventType.WORK_PACKAGE_CANCELLED,
+                    payload={"work_package_id": str(package.id), "key": package.key},
+                    now=current_time,
+                )
+                WorkflowCancellationService.finalize_if_quiescent(
+                    generation_id=gen.id,
+                    workflow_run_id=run.id,
+                    reason="Cancellation finalized after worker failure.",
+                )
+            elif retryable and WorkflowRetryService.should_retry(package, attempt):
+                WorkflowRetryService.schedule_retry(package, now=current_time)
+                OutboxService.enqueue_event(
+                    organization=package.organization,
+                    generation=gen,
+                    aggregate_type="work_package",
+                    aggregate_id=str(package.id),
+                    event_type=EventType.WORK_PACKAGE_RETRY_SCHEDULED,
+                    payload={
+                        "work_package_id": str(package.id),
+                        "key": package.key,
+                        "next_attempt_at": package.next_attempt_at.isoformat() if package.next_attempt_at else None,
+                    },
+                    now=current_time,
+                )
+            else:
+                package.status = WorkPackageStatus.FAILED
+                package.failure_category = failure_category or "UNKNOWN"
+                package.error_message = (error_details or {}).get("error", "Work package execution failed.")
+                package.completed_at = current_time
+                package.save(update_fields=[
+                    "status",
+                    "failure_category",
+                    "error_message",
+                    "completed_at",
+                    "state_version",
+                    "updated_at",
+                ])
+                OutboxService.enqueue_event(
+                    organization=package.organization,
+                    generation=gen,
+                    aggregate_type="work_package",
+                    aggregate_id=str(package.id),
+                    event_type=EventType.WORK_PACKAGE_FAILED,
+                    payload={"work_package_id": str(package.id), "key": package.key},
+                    now=current_time,
+                )
 
             return package
 
@@ -380,6 +551,13 @@ class WorkflowSchedulerService:
             if not package:
                 raise ValidationError("Work package not found.", code="package_not_found")
 
+            # Finding 14: Require CANDIDATE_COMPLETE state
+            if package.status != WorkPackageStatus.CANDIDATE_COMPLETE:
+                raise ValidationError(
+                    f"Work package must be in CANDIDATE_COMPLETE state to be validated complete. Current status: '{package.status}'.",
+                    code="invalid_package_state",
+                )
+
             package.status = WorkPackageStatus.COMPLETED
             package.validation_evidence = validation_evidence
             package.completed_at = current_time
@@ -403,6 +581,7 @@ class WorkflowSchedulerService:
                     "key": package.key,
                     "validation_evidence": validation_evidence,
                 },
+                now=current_time,
             )
 
             return package

@@ -309,9 +309,7 @@ class GenerationStep(TimeStampedModel):
     )
     milestone = models.ForeignKey(
         GenerationMilestone,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
+        on_delete=models.PROTECT,
         related_name="steps",
         db_index=True,
         help_text="Milestone container this step belongs to.",
@@ -373,6 +371,27 @@ class GenerationStep(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"Step {self.step_number}: {self.name} [{self.status}]"
+
+    def clean(self) -> None:
+        super().clean()
+        if self.milestone_id and self.generation_id and self.milestone.generation_id != self.generation_id:
+            raise ValidationError(
+                "GenerationStep milestone must belong to the same generation.",
+                code="cross_generation_milestone",
+            )
+
+    def save(self, *args, **kwargs):
+        if self.generation_id and not self.milestone_id:
+            m = GenerationMilestone.objects.filter(generation_id=self.generation_id).order_by("sequence").first()
+            if not m:
+                m = GenerationMilestone.objects.create(
+                    generation_id=self.generation_id,
+                    name="Default Milestone",
+                    sequence=1,
+                )
+            self.milestone = m
+        self.clean()
+        super().save(*args, **kwargs)
 
 
 class AgentRun(TimeStampedModel):

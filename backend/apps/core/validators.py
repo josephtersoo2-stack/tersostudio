@@ -11,8 +11,13 @@ FORBIDDEN_SECRET_KEYS = frozenset(
         "pwd",
         "secret",
         "token",
+        "lease_token",
+        "claim_token",
         "access_token",
         "refresh_token",
+        "auth_token",
+        "bearer_token",
+        "session_token",
         "api_key",
         "apikey",
         "private_key",
@@ -44,7 +49,10 @@ def find_forbidden_json_key(value) -> str | None:
     if isinstance(value, dict):
         for k, v in value.items():
             norm_k = normalize_json_key(str(k))
-            if norm_k in FORBIDDEN_SECRET_KEYS:
+            if norm_k in FORBIDDEN_SECRET_KEYS or (
+                norm_k.endswith(("_token", "_secret", "_password", "_apikey"))
+                and norm_k != "idempotency_key"
+            ):
                 return norm_k
             nested = find_forbidden_json_key(v)
             if nested:

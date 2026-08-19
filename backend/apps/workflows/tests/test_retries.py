@@ -2,7 +2,7 @@
 import pytest
 from apps.accounts.models import User
 from apps.generations.enums import GenerationStatus
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationMilestone, GenerationStep
 from apps.organizations.models import Organization
 from apps.products.models import WordPressProduct
 from apps.projects.models import Project
@@ -30,11 +30,14 @@ class TestWorkflowRetryService:
         prod = WordPressProduct.objects.create(organization=org, display_name="Plugin A", slug="plugin-a", created_by=user)
         proj = Project.objects.create(organization=org, product=prod, name="Proj A", slug="proj-a", created_by=user)
         gen = Generation.objects.create(organization=org, project=proj, prompt="Build WP plugin", status=GenerationStatus.BUILDING, created_by=user)
+        milestone = GenerationMilestone.objects.create(generation=gen, name="Milestone 1", sequence=1)
+        step = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=1, name="Step 1", agent_role="coder")
         run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, status=WorkflowRunStatus.RUNNING, created_by=user)
 
         pkg = WorkPackage.objects.create(
             organization=org,
             workflow_run=run,
+            generation_step=step,
             key="pkg_1",
             name="Task 1",
             max_attempts=3,

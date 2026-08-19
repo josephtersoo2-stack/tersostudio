@@ -2,12 +2,12 @@
 import uuid
 import pytest
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.accounts.models import User
 from apps.generations.enums import GenerationStatus
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationMilestone, GenerationStep
 from apps.organizations.models import Organization
 from apps.products.models import WordPressProduct
 from apps.projects.models import Project
@@ -38,7 +38,9 @@ def org_and_user(db):
     prod = WordPressProduct.objects.create(organization=org, display_name="Plugin A", slug="plugin-a", created_by=user)
     proj = Project.objects.create(organization=org, product=prod, name="Proj A", slug="proj-a", created_by=user)
     gen = Generation.objects.create(organization=org, project=proj, prompt="Build WP plugin", created_by=user)
-    return org, user, gen
+    milestone = GenerationMilestone.objects.create(generation=gen, name="Architecture", sequence=1)
+    step = GenerationStep.objects.create(generation=gen, milestone=milestone, step_number=1, name="Blueprint", agent_role="architect")
+    return org, user, gen, step
 
 
 @pytest.mark.django_db
@@ -46,7 +48,7 @@ class TestWorkflowModels:
     """Test suite for WorkflowRun, WorkPackage, Dependencies, Leases, and Outbox."""
 
     def test_workflow_run_creation(self, org_and_user):
-        org, user, gen = org_and_user
+        org, user, gen, step = org_and_user
         run = WorkflowRun.objects.create(
             organization=org,
             generation=gen,
@@ -58,17 +60,33 @@ class TestWorkflowModels:
         assert str(run).startswith(f"WorkflowRun #1 for Gen {gen.id}")
 
     def test_workflow_run_unique_run_number(self, org_and_user):
-        org, user, gen = org_and_user
+        org, user, gen, step = org_and_user
         WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
         with pytest.raises(IntegrityError):
             WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
 
+    def test_unique_active_workflow_run_constraint(self, org_and_user):
+        org, user, gen, step = org_and_user
+        run1 = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, status=WorkflowRunStatus.RUNNING, created_by=user)
+        with transaction.atomic():
+            with pytest.raises(IntegrityError):
+                WorkflowRun.objects.create(organization=org, generation=gen, run_number=2, status=WorkflowRunStatus.PENDING, created_by=user)
+
+        # Mark run1 terminal
+        run1.status = WorkflowRunStatus.COMPLETED
+        run1.save()
+
+        # Now run2 can be created
+        run2 = WorkflowRun.objects.create(organization=org, generation=gen, run_number=2, status=WorkflowRunStatus.RUNNING, created_by=user)
+        assert run2.id is not None
+
     def test_work_package_creation_and_key_unique(self, org_and_user):
-        org, user, gen = org_and_user
+        org, user, gen, step = org_and_user
         run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
         pkg = WorkPackage.objects.create(
             organization=org,
             workflow_run=run,
+            generation_step=step,
             key="arch_blueprint",
             name="Architecture Blueprint",
             priority=100,
@@ -82,16 +100,17 @@ class TestWorkflowModels:
             WorkPackage.objects.create(
                 organization=org,
                 workflow_run=run,
+                generation_step=step,
                 key="arch_blueprint",
                 name="Duplicate Key",
                 created_by=user,
             )
 
     def test_work_package_dependency_creation(self, org_and_user):
-        org, user, gen = org_and_user
+        org, user, gen, step = org_and_user
         run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
-        p1 = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_1", name="Task 1", created_by=user)
-        p2 = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_2", name="Task 2", created_by=user)
+        p1 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step, key="pkg_1", name="Task 1", created_by=user)
+        p2 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step, key="pkg_2", name="Task 2", created_by=user)
 
         dep = WorkPackageDependency.objects.create(
             workflow_run=run,
@@ -109,10 +128,23 @@ class TestWorkflowModels:
                 successor=p2,
             )
 
-    def test_work_package_lease_active_constraint(self, org_and_user):
-        org, user, gen = org_and_user
+    def test_dependency_self_edge_check_constraint(self, org_and_user):
+        org, user, gen, step = org_and_user
         run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
-        pkg = WorkPackage.objects.create(organization=org, workflow_run=run, key="pkg_1", name="Task 1", created_by=user)
+        p1 = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step, key="pkg_1", name="Task 1", created_by=user)
+
+        with pytest.raises((ValidationError, IntegrityError)):
+            WorkPackageDependency.objects.create(
+                workflow_run=run,
+                predecessor=p1,
+                successor=p1,
+                dependency_type=DependencyType.HARD,
+            )
+
+    def test_work_package_lease_active_constraint(self, org_and_user):
+        org, user, gen, step = org_and_user
+        run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
+        pkg = WorkPackage.objects.create(organization=org, workflow_run=run, generation_step=step, key="pkg_1", name="Task 1", created_by=user)
         attempt1 = WorkPackageAttempt.objects.create(work_package=pkg, attempt_number=1, worker_id="worker_1")
 
         now = timezone.now()
@@ -130,7 +162,6 @@ class TestWorkflowModels:
 
         # Creating a second unreleased lease on same package fails unique active constraint
         attempt2 = WorkPackageAttempt.objects.create(work_package=pkg, attempt_number=2, worker_id="worker_2")
-        from django.db import transaction
         with transaction.atomic():
             with pytest.raises(IntegrityError):
                 WorkPackageLease.objects.create(
@@ -159,7 +190,7 @@ class TestWorkflowModels:
         assert lease2.id is not None
 
     def test_outbox_event_creation(self, org_and_user):
-        org, user, gen = org_and_user
+        org, user, gen, step = org_and_user
         event = OutboxEvent.objects.create(
             organization=org,
             generation=gen,

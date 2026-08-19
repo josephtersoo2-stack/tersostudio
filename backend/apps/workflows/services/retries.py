@@ -34,10 +34,21 @@ class WorkflowRetryService:
         return min(delay, cap)
 
     @classmethod
+    def calculate_backoff_delay(
+        cls,
+        attempt_count: int,
+        base_seconds: Optional[int] = None,
+        max_seconds: Optional[int] = None,
+    ) -> int:
+        """Alias for calculate_retry_delay."""
+        return cls.calculate_retry_delay(attempt_count, base_seconds, max_seconds)
+
+    @classmethod
     def should_retry(
         cls,
         work_package: WorkPackage,
         attempt: Optional[WorkPackageAttempt] = None,
+        ignore_run_state: bool = False,
     ) -> bool:
         """Determine if a failed package is eligible for another attempt."""
         if attempt is not None and not attempt.retryable:
@@ -46,25 +57,26 @@ class WorkflowRetryService:
         if work_package.attempt_count >= work_package.max_attempts:
             return False
 
-        run = work_package.workflow_run
-        if run.status in [
-            WorkflowRunStatus.PAUSED,
-            WorkflowRunStatus.CANCELLING,
-            WorkflowRunStatus.CANCELLED,
-            WorkflowRunStatus.FAILED,
-            WorkflowRunStatus.TIMED_OUT,
-        ]:
-            return False
+        if not ignore_run_state:
+            run = work_package.workflow_run
+            if run.status in [
+                WorkflowRunStatus.PAUSED,
+                WorkflowRunStatus.CANCELLING,
+                WorkflowRunStatus.CANCELLED,
+                WorkflowRunStatus.FAILED,
+                WorkflowRunStatus.TIMED_OUT,
+            ]:
+                return False
 
-        generation = run.generation
-        if generation.status in [
-            GenerationStatus.PAUSED,
-            GenerationStatus.CANCELLING,
-            GenerationStatus.CANCELLED,
-            GenerationStatus.FAILED,
-            GenerationStatus.TIMED_OUT,
-        ]:
-            return False
+            generation = run.generation
+            if generation.status in [
+                GenerationStatus.PAUSED,
+                GenerationStatus.CANCELLING,
+                GenerationStatus.CANCELLED,
+                GenerationStatus.FAILED,
+                GenerationStatus.TIMED_OUT,
+            ]:
+                return False
 
         return True
 
