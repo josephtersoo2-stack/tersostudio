@@ -272,49 +272,30 @@ class WorkPackage(OrganizationOwnedModel):
 
     def clean(self) -> None:
         super().clean()
-        if self.workflow_run_id:
-            if not self.organization_id:
-                self.organization = self.workflow_run.organization
-            elif self.organization_id != self.workflow_run.organization_id:
-                raise ValidationError(
-                    "WorkPackage organization must match WorkflowRun organization.",
-                    code="organization_mismatch",
-                )
-        if self.generation_step_id and self.workflow_run_id:
-            if self.generation_step.generation_id != self.workflow_run.generation_id:
-                raise ValidationError(
-                    "WorkPackage generation_step must belong to the same generation as its workflow_run.",
-                    code="cross_generation_step",
-                )
+        if not self.workflow_run_id:
+            raise ValidationError(
+                {"workflow_run": "WorkPackage workflow_run is required."},
+                code="missing_workflow_run",
+            )
+        if not self.generation_step_id:
+            raise ValidationError(
+                {"generation_step": "WorkPackage generation_step is required."},
+                code="missing_generation_step",
+            )
+        if not self.organization_id:
+            self.organization = self.workflow_run.organization
+        elif self.organization_id != self.workflow_run.organization_id:
+            raise ValidationError(
+                {"organization": "WorkPackage organization must match WorkflowRun organization."},
+                code="organization_mismatch",
+            )
+        if self.generation_step.generation_id != self.workflow_run.generation_id:
+            raise ValidationError(
+                {"generation_step": "WorkPackage generation_step must belong to the same generation as its workflow_run."},
+                code="cross_generation_step",
+            )
 
     def save(self, *args, **kwargs):
-        if self.workflow_run_id:
-            if not self.organization_id:
-                self.organization = self.workflow_run.organization
-            elif self.organization_id != self.workflow_run.organization_id:
-                raise ValidationError(
-                    "WorkPackage organization must match WorkflowRun organization.",
-                    code="organization_mismatch",
-                )
-            if not self.generation_step_id:
-                from apps.generations.models import GenerationMilestone, GenerationStep
-                step = GenerationStep.objects.filter(generation_id=self.workflow_run.generation_id).order_by("step_number").first()
-                if not step:
-                    m = GenerationMilestone.objects.filter(generation_id=self.workflow_run.generation_id).order_by("sequence").first()
-                    if not m:
-                        m = GenerationMilestone.objects.create(
-                            generation_id=self.workflow_run.generation_id,
-                            name="Default Milestone",
-                            sequence=1,
-                        )
-                    step = GenerationStep.objects.create(
-                        generation_id=self.workflow_run.generation_id,
-                        milestone=m,
-                        step_number=1,
-                        name=f"Step for {self.name}",
-                        agent_role="coder",
-                    )
-                self.generation_step = step
         self.clean()
         super().save(*args, **kwargs)
 

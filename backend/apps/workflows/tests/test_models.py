@@ -202,3 +202,43 @@ class TestWorkflowModels:
         assert event.published_at is None
         assert event.publish_attempts == 0
         assert "PENDING" in str(event)
+
+    def test_work_package_missing_generation_step_rejected(self, org_and_user):
+        """Verify WorkPackage without generation_step is rejected and does not fabricate steps/milestones/roles."""
+        org, user, gen, step = org_and_user
+        run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
+        initial_step_count = GenerationStep.objects.filter(generation=gen).count()
+        initial_milestone_count = GenerationMilestone.objects.filter(generation=gen).count()
+
+        pkg = WorkPackage(
+            organization=org,
+            workflow_run=run,
+            key="orphan_pkg",
+            name="Orphan Package",
+            created_by=user,
+        )
+        with pytest.raises(ValidationError):
+            pkg.save()
+
+        # Assert no step or milestone was auto-created
+        assert GenerationStep.objects.filter(generation=gen).count() == initial_step_count
+        assert GenerationMilestone.objects.filter(generation=gen).count() == initial_milestone_count
+
+    def test_work_package_cross_generation_step_rejected(self, org_and_user):
+        """Verify WorkPackage cannot reference a generation_step belonging to a different generation."""
+        org, user, gen, step = org_and_user
+        other_gen = Generation.objects.create(organization=org, project=gen.project, prompt="Other gen", created_by=user)
+        other_milestone = GenerationMilestone.objects.create(generation=other_gen, name="Other", sequence=1)
+        other_step = GenerationStep.objects.create(generation=other_gen, milestone=other_milestone, step_number=1, name="Other Step", agent_role="architect")
+        run = WorkflowRun.objects.create(organization=org, generation=gen, run_number=1, created_by=user)
+
+        pkg = WorkPackage(
+            organization=org,
+            workflow_run=run,
+            generation_step=other_step,
+            key="cross_pkg",
+            name="Cross Package",
+            created_by=user,
+        )
+        with pytest.raises(ValidationError):
+            pkg.save()

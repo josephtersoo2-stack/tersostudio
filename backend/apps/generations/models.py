@@ -374,22 +374,23 @@ class GenerationStep(TimeStampedModel):
 
     def clean(self) -> None:
         super().clean()
-        if self.milestone_id and self.generation_id and self.milestone.generation_id != self.generation_id:
+        if not self.milestone_id:
             raise ValidationError(
-                "GenerationStep milestone must belong to the same generation.",
+                {"milestone": "GenerationStep milestone is required."},
+                code="missing_milestone",
+            )
+        if not self.generation_id:
+            raise ValidationError(
+                {"generation": "GenerationStep generation is required."},
+                code="missing_generation",
+            )
+        if self.milestone.generation_id != self.generation_id:
+            raise ValidationError(
+                {"milestone": "GenerationStep milestone must belong to the same generation."},
                 code="cross_generation_milestone",
             )
 
     def save(self, *args, **kwargs):
-        if self.generation_id and not self.milestone_id:
-            m = GenerationMilestone.objects.filter(generation_id=self.generation_id).order_by("sequence").first()
-            if not m:
-                m = GenerationMilestone.objects.create(
-                    generation_id=self.generation_id,
-                    name="Default Milestone",
-                    sequence=1,
-                )
-            self.milestone = m
         self.clean()
         super().save(*args, **kwargs)
 

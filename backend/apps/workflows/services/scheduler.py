@@ -320,6 +320,61 @@ class WorkflowSchedulerService:
             return package, attempt, lease
 
     @classmethod
+    def _validate_active_lease(
+        cls,
+        lease_token: uuid.UUID,
+        attempt_id: int,
+        current_time,
+    ) -> Tuple[WorkPackageLease, WorkPackageAttempt, WorkPackage]:
+        """Validate lease token, expiration, attempt binding, and package under lock."""
+        lease = (
+            WorkPackageLease.objects.filter(lease_token=lease_token)
+            .select_for_update()
+            .first()
+        )
+        if not lease or lease.released_at:
+            raise ValidationError("Valid active lease token is required.", code="invalid_lease_token")
+
+        if lease.is_expired(current_time):
+            raise ValidationError("Lease has expired; reaper owns timeout recovery.", code="lease_expired")
+
+        if lease.attempt_id != attempt_id:
+            raise ValidationError(
+                "Lease token does not match specified attempt ID.",
+                code="lease_attempt_mismatch",
+            )
+
+        attempt = (
+            WorkPackageAttempt.objects.filter(id=attempt_id)
+            .select_for_update()
+            .first()
+        )
+        if not attempt or attempt.work_package_id != lease.work_package_id:
+            raise ValidationError("Attempt does not match lease package.", code="attempt_mismatch")
+
+        if attempt.status != AttemptStatus.RUNNING:
+            raise ValidationError(
+                f"Attempt must be in RUNNING status, found '{attempt.status}'.",
+                code="invalid_attempt_status",
+            )
+
+        package = (
+            WorkPackage.objects.filter(id=lease.work_package_id)
+            .select_for_update()
+            .first()
+        )
+        if not package:
+            raise ValidationError("Package not found.", code="package_not_found")
+
+        if package.status not in [WorkPackageStatus.LEASED, WorkPackageStatus.RUNNING]:
+            raise ValidationError(
+                f"Package must be in LEASED or RUNNING status, found '{package.status}'.",
+                code="invalid_package_status",
+            )
+
+        return lease, attempt, package
+
+    @classmethod
     def record_candidate_complete(
         cls,
         attempt_id: int,
@@ -327,51 +382,57 @@ class WorkflowSchedulerService:
         result_payload: Dict[str, Any],
         now=None,
     ) -> WorkPackage:
-        """Worker registers candidate completion for an attempt; securely releases lease."""
+        """Worker registers candidate completion for an attempt; releases lease."""
         current_time = now or timezone.now()
 
         with transaction.atomic():
-            # 1. Lock active lease by token
-            lease = (
-                WorkPackageLease.objects.filter(lease_token=lease_token)
-                .select_for_update()
-                .first()
-            )
-            if not lease or lease.released_at:
-                raise ValidationError("Valid active lease token is required.", code="invalid_lease_token")
+            lease, attempt, package = cls._validate_active_lease(lease_token, attempt_id, current_time)
 
-            if lease.is_expired(current_time):
-                raise ValidationError("Lease has expired.", code="lease_expired")
-
-            # 2. Strict token-attempt binding
-            if lease.attempt_id != attempt_id:
-                raise ValidationError(
-                    "Lease token does not match specified attempt ID.",
-                    code="lease_attempt_mismatch",
-                )
-
-            attempt = (
-                WorkPackageAttempt.objects.filter(id=attempt_id)
-                .select_for_update()
-                .first()
-            )
-            if not attempt or attempt.work_package_id != lease.work_package_id:
-                raise ValidationError("Attempt does not match lease package.", code="attempt_mismatch")
-
-            package = (
-                WorkPackage.objects.filter(id=lease.work_package_id)
-                .select_for_update()
-                .first()
-            )
-            if not package:
-                raise ValidationError("Package not found.", code="package_not_found")
-
-            # 3. Release lease
+            # 1. Release lease
             lease.released_at = current_time
             lease.release_reason = LeaseReleaseReason.COMPLETED
             lease.save(update_fields=["released_at", "release_reason", "updated_at"])
 
-            # 4. Update attempt & package
+            # 2. Check if cancellation is pending (Finding 07)
+            run = package.workflow_run
+            gen = run.generation
+            is_cancelling = (
+                package.cancel_requested_at is not None
+                or run.status == WorkflowRunStatus.CANCELLING
+                or gen.status == GenerationStatus.CANCELLING
+            )
+
+            if is_cancelling:
+                # Preserve candidate result for audit
+                attempt.status = AttemptStatus.CANDIDATE_COMPLETE
+                attempt.result_payload = result_payload or {}
+                attempt.completed_at = current_time
+                attempt.save(update_fields=["status", "result_payload", "completed_at", "updated_at"])
+
+                # Package becomes CANCELLED
+                package.status = WorkPackageStatus.CANCELLED
+                package.completed_at = current_time
+                package.state_version += 1
+                package.save(update_fields=["status", "completed_at", "state_version", "updated_at"])
+
+                OutboxService.enqueue_event(
+                    organization=package.organization,
+                    generation=gen,
+                    aggregate_type="work_package",
+                    aggregate_id=str(package.id),
+                    event_type=EventType.WORK_PACKAGE_CANCELLED,
+                    payload={"work_package_id": str(package.id), "key": package.key},
+                    now=current_time,
+                )
+
+                WorkflowCancellationService.finalize_if_quiescent(
+                    generation_id=gen.id,
+                    workflow_run_id=run.id,
+                    reason="Cancellation finalized after candidate complete response during cancellation.",
+                )
+                return package
+
+            # 3. Normal candidate completion
             attempt.status = AttemptStatus.CANDIDATE_COMPLETE
             attempt.result_payload = result_payload or {}
             attempt.completed_at = current_time
@@ -412,44 +473,14 @@ class WorkflowSchedulerService:
         current_time = now or timezone.now()
 
         with transaction.atomic():
-            # 1. Lock active lease by token
-            lease = (
-                WorkPackageLease.objects.filter(lease_token=lease_token)
-                .select_for_update()
-                .first()
-            )
-            if not lease or lease.released_at:
-                raise ValidationError("Valid active lease token is required.", code="invalid_lease_token")
+            lease, attempt, package = cls._validate_active_lease(lease_token, attempt_id, current_time)
 
-            # 2. Strict token-attempt binding
-            if lease.attempt_id != attempt_id:
-                raise ValidationError(
-                    "Lease token does not match specified attempt ID.",
-                    code="lease_attempt_mismatch",
-                )
-
-            attempt = (
-                WorkPackageAttempt.objects.filter(id=attempt_id)
-                .select_for_update()
-                .first()
-            )
-            if not attempt or attempt.work_package_id != lease.work_package_id:
-                raise ValidationError("Attempt does not match lease package.", code="attempt_mismatch")
-
-            package = (
-                WorkPackage.objects.filter(id=lease.work_package_id)
-                .select_for_update()
-                .first()
-            )
-            if not package:
-                raise ValidationError("Package not found.", code="package_not_found")
-
-            # 3. Release lease
+            # 1. Release lease
             lease.released_at = current_time
             lease.release_reason = LeaseReleaseReason.FAILED
             lease.save(update_fields=["released_at", "release_reason", "updated_at"])
 
-            # 4. Update attempt
+            # 2. Update attempt
             attempt.status = AttemptStatus.FAILED
             attempt.failure_category = failure_category or "UNKNOWN"
             attempt.error_details = error_details or {}
@@ -457,20 +488,19 @@ class WorkflowSchedulerService:
             attempt.completed_at = current_time
             attempt.save(update_fields=["status", "failure_category", "error_details", "retryable", "completed_at", "updated_at"])
 
-            # 5. Handle cancellation or retry vs failure
+            # 3. Handle cancellation or retry vs failure
             run = package.workflow_run
             gen = run.generation
             is_cancelling = (
-                package.cancel_requested_at
+                package.cancel_requested_at is not None
                 or run.status == WorkflowRunStatus.CANCELLING
                 or gen.status == GenerationStatus.CANCELLING
             )
 
-            package.state_version += 1
-
             if is_cancelling:
                 package.status = WorkPackageStatus.CANCELLED
                 package.completed_at = current_time
+                package.state_version += 1
                 package.save(update_fields=["status", "completed_at", "state_version", "updated_at"])
                 OutboxService.enqueue_event(
                     organization=package.organization,
@@ -506,6 +536,7 @@ class WorkflowSchedulerService:
                 package.failure_category = failure_category or "UNKNOWN"
                 package.error_message = (error_details or {}).get("error", "Work package execution failed.")
                 package.completed_at = current_time
+                package.state_version += 1
                 package.save(update_fields=[
                     "status",
                     "failure_category",
@@ -556,6 +587,30 @@ class WorkflowSchedulerService:
                 raise ValidationError(
                     f"Work package must be in CANDIDATE_COMPLETE state to be validated complete. Current status: '{package.status}'.",
                     code="invalid_package_state",
+                )
+
+            # Finding 12: Validate candidate attempt truth in relational ledger
+            latest_attempt = (
+                package.attempts.order_by("-attempt_number")
+                .select_for_update()
+                .first()
+            )
+            if not latest_attempt:
+                raise ValidationError(
+                    "Work package has no recorded execution attempts.",
+                    code="missing_attempt_history",
+                )
+
+            if latest_attempt.attempt_number != package.attempt_count:
+                raise ValidationError(
+                    f"Latest attempt number ({latest_attempt.attempt_number}) does not match package attempt count ({package.attempt_count}).",
+                    code="attempt_count_mismatch",
+                )
+
+            if latest_attempt.status != AttemptStatus.CANDIDATE_COMPLETE:
+                raise ValidationError(
+                    f"Latest attempt must be in CANDIDATE_COMPLETE state, found '{latest_attempt.status}'.",
+                    code="invalid_attempt_state",
                 )
 
             package.status = WorkPackageStatus.COMPLETED

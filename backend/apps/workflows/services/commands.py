@@ -336,19 +336,17 @@ class WorkflowCommandService:
                 # Check retryable flag
                 if latest_attempt and latest_attempt.retryable is False:
                     continue
-                # Check retry budget
-                if not WorkflowRetryService.should_retry(pkg, latest_attempt, ignore_run_state=True):
+                # Check retry eligibility with canonical manual mode
+                if not WorkflowRetryService.should_retry(pkg, latest_attempt, manual_mode=True):
                     continue
 
-                # Schedule retry with backoff
-                delay_sec = WorkflowRetryService.calculate_backoff_delay(pkg.attempt_count)
-                pkg.status = WorkPackageStatus.RETRY_WAIT
-                pkg.next_attempt_at = now + timedelta(seconds=delay_sec)
+                # Clear previous error fields and schedule retry using canonical service
                 pkg.error_message = ""
                 pkg.failure_category = ""
-                pkg.state_version += 1
-                pkg.save(update_fields=["status", "next_attempt_at", "error_message", "failure_category", "state_version", "updated_at"])
+                pkg.save(update_fields=["error_message", "failure_category", "updated_at"])
+                WorkflowRetryService.schedule_retry(pkg, now=now)
 
+                delay_sec = int((pkg.next_attempt_at - now).total_seconds())
                 OutboxService.enqueue_event(
                     organization=pkg.organization,
                     aggregate_type="work_package",

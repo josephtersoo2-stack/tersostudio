@@ -161,6 +161,16 @@ class WorkflowLeaseService:
             lease.released_at = current_time
             lease.release_reason = reason
             lease.save(update_fields=["released_at", "release_reason", "updated_at"])
+
+            # If generation/run is cancelling, finalize if now quiescent (Finding 08)
+            gen = lease.work_package.workflow_run.generation
+            if gen.status == GenerationStatus.CANCELLING or gen.cancel_requested_at:
+                WorkflowCancellationService.finalize_if_quiescent(
+                    generation_id=gen.id,
+                    workflow_run_id=lease.work_package.workflow_run_id,
+                    reason="Cancellation finalized after cooperative lease release.",
+                )
+
             return lease
 
     @classmethod

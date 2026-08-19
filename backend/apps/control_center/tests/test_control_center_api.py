@@ -14,6 +14,7 @@ from apps.generations.models import (
     AgentRun,
     Artifact,
     Generation,
+    GenerationMilestone,
     GenerationStep,
     Workspace,
 )
@@ -98,8 +99,14 @@ def seed_data(db, normal_user_a, normal_user_b):
         generation=gen_1,
         workspace_path="/var/workspaces/gen_1",
     )
+    m_1 = GenerationMilestone.objects.create(
+        generation=gen_1,
+        name="Milestone 1",
+        sequence=1,
+    )
     step_1 = GenerationStep.objects.create(
         generation=gen_1,
+        milestone=m_1,
         step_number=1,
         name="Scaffold Architecture",
         agent_role="architect",
@@ -107,6 +114,7 @@ def seed_data(db, normal_user_a, normal_user_b):
     )
     step_2 = GenerationStep.objects.create(
         generation=gen_1,
+        milestone=m_1,
         step_number=2,
         name="Implement Hooks",
         agent_role="coder",
@@ -156,8 +164,14 @@ def seed_data(db, normal_user_a, normal_user_b):
         current_step_number=1,
         total_steps=1,
     )
+    m_2 = GenerationMilestone.objects.create(
+        generation=gen_2,
+        name="Milestone 2",
+        sequence=1,
+    )
     step_b1 = GenerationStep.objects.create(
         generation=gen_2,
+        milestone=m_2,
         step_number=1,
         name="Database Schema Creation",
         agent_role="architect",

@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.generations.enums import AgentRunStatus, ArtifactType, GenerationStatus, StepStatus
-from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep, Workspace
+from apps.generations.models import AgentRun, Artifact, Generation, GenerationMilestone, GenerationStep, Workspace
 from apps.organizations.services import ensure_personal_organization
 from apps.projects.services import ProjectService
 
@@ -38,6 +38,11 @@ class GenerationDomainTests(TestCase):
             prompt="Build a full membership plugin with content locking shortcodes.",
             status=GenerationStatus.DRAFT,
         )
+        self.milestone = GenerationMilestone.objects.create(
+            generation=self.generation,
+            name="Core Milestone",
+            sequence=1,
+        )
 
     def test_create_generation_api_creates_workspace_automatically(self):
         """Verify POST /api/generations/ automatically initializes an isolated Workspace."""
@@ -68,6 +73,7 @@ class GenerationDomainTests(TestCase):
         """Verify steps are properly sequenced and constrained by step_number."""
         step1 = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=1,
             name="Feature Discovery & Spec",
             agent_role="feature_discovery",
@@ -75,6 +81,7 @@ class GenerationDomainTests(TestCase):
         )
         step2 = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=2,
             name="Architecture Blueprint",
             agent_role="architect",
@@ -89,6 +96,7 @@ class GenerationDomainTests(TestCase):
         with self.assertRaises(IntegrityError):
             GenerationStep.objects.create(
                 generation=self.generation,
+                milestone=self.milestone,
                 step_number=1,
                 name="Duplicate Step 1",
                 agent_role="coder",
@@ -98,6 +106,7 @@ class GenerationDomainTests(TestCase):
         """Verify a single GenerationStep supports multiple execution attempts (AgentRuns)."""
         step = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=1,
             name="Code Generation",
             agent_role="coder",
@@ -147,6 +156,7 @@ class GenerationDomainTests(TestCase):
         )
         step = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=1,
             name="Architecture",
             agent_role="architect",
@@ -206,6 +216,7 @@ class GenerationDomainTests(TestCase):
         """Verify clients cannot create, update, or delete GenerationSteps via public API."""
         step = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=1,
             name="Architecture",
             agent_role="architect",
@@ -242,6 +253,7 @@ class GenerationDomainTests(TestCase):
         """Verify clients cannot create, update, or delete AgentRuns via public API."""
         step = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=1,
             name="Architecture",
             agent_role="architect",
@@ -344,3 +356,44 @@ class GenerationDomainTests(TestCase):
             ).status_code,
             status.HTTP_405_METHOD_NOT_ALLOWED,
         )
+
+    def test_generation_step_missing_milestone_rejected(self):
+        """Verify GenerationStep without milestone is rejected and never auto-creates milestones."""
+        initial_milestone_count = GenerationMilestone.objects.filter(generation=self.generation).count()
+        step = GenerationStep(
+            generation=self.generation,
+            step_number=99,
+            name="Orphan Step",
+            agent_role="architect",
+        )
+        with self.assertRaises(ValidationError):
+            step.save()
+        # Assert no milestone was fabricated
+        self.assertEqual(
+            GenerationMilestone.objects.filter(generation=self.generation).count(),
+            initial_milestone_count,
+        )
+
+    def test_generation_step_cross_generation_milestone_rejected(self):
+        """Verify GenerationStep cannot reference a milestone belonging to another generation."""
+        other_gen = Generation.objects.create(
+            organization=self.org,
+            project=self.project,
+            created_by=self.user,
+            prompt="Other gen",
+            status=GenerationStatus.DRAFT,
+        )
+        other_milestone = GenerationMilestone.objects.create(
+            generation=other_gen,
+            name="Other Milestone",
+            sequence=1,
+        )
+        step = GenerationStep(
+            generation=self.generation,
+            milestone=other_milestone,
+            step_number=99,
+            name="Cross Gen Step",
+            agent_role="architect",
+        )
+        with self.assertRaises(ValidationError):
+            step.save()

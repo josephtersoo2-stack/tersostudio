@@ -14,6 +14,7 @@ from apps.generations.models import (
     AgentRun,
     Artifact,
     Generation,
+    GenerationMilestone,
     GenerationStep,
     Workspace,
 )
@@ -54,7 +55,7 @@ def normal_user(db):
 
 @pytest.fixture
 def sample_operational_tree(db, normal_user):
-    """Seed a rich operational tree with generation, step, run, workspace, and stored artifact."""
+    """Seed comprehensive generation with workspace, steps, runs, and artifacts."""
     org = ensure_personal_organization(normal_user)
     project = ProjectService.create_project(
         organization=org,
@@ -62,10 +63,8 @@ def sample_operational_tree(db, normal_user):
         name="WooCommerce Enterprise Gateway",
         description="Payment gateway integration",
     )
-    full_prompt = (
-        "Build a custom WooCommerce payment gateway plugin supporting Stripe webhooks, "
-        "refund workflows, and admin configuration tabs."
-    )
+
+    full_prompt = "Build a WooCommerce custom payment gateway supporting Stripe SEPA, 3D Secure 2, and subscription webhooks."
     generation = Generation.objects.create(
         organization=org,
         project=project,
@@ -84,8 +83,14 @@ def sample_operational_tree(db, normal_user):
         disk_usage_bytes=4096,
         metadata={"container_id": "docker_c_99"},
     )
+    milestone = GenerationMilestone.objects.create(
+        generation=generation,
+        name="Architecture & Handlers",
+        sequence=1,
+    )
     step_1 = GenerationStep.objects.create(
         generation=generation,
+        milestone=milestone,
         step_number=1,
         name="Architecture & Webhook Handlers",
         agent_role="architect",

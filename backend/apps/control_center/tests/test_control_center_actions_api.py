@@ -10,7 +10,7 @@ from apps.generations.enums import (
     GenerationStatus,
     StepStatus,
 )
-from apps.generations.models import AgentRun, Generation, GenerationStep
+from apps.generations.models import AgentRun, Generation, GenerationMilestone, GenerationStep
 from apps.organizations.services import ensure_personal_organization
 from apps.projects.models import Project
 from apps.projects.services import ProjectService
@@ -24,24 +24,20 @@ def api_client():
 
 
 @pytest.fixture
-def non_staff_user(db):
+def staff_user(db):
     return User.objects.create_user(
-        email="customer.action@example.com",
-        password="CustomerPassword123!",
-        first_name="Customer",
-        last_name="User",
-        is_staff=False,
+        email="ops_lead@tersuite.com",
+        password="StaffPassword123!",
+        is_staff=True,
     )
 
 
 @pytest.fixture
-def staff_user(db):
+def non_staff_user(db):
     return User.objects.create_user(
-        email="staff.operator@tersuite.com",
-        password="StaffPassword123!",
-        first_name="Staff",
-        last_name="Operator",
-        is_staff=True,
+        email="regular_user@tersuite.com",
+        password="RegularPassword123!",
+        is_staff=False,
     )
 
 
@@ -67,8 +63,14 @@ def active_generation(db, sample_project, non_staff_user):
         current_step_number=1,
         total_steps=2,
     )
+    milestone = GenerationMilestone.objects.create(
+        generation=gen,
+        name="Scaffolding & Coding",
+        sequence=1,
+    )
     step1 = GenerationStep.objects.create(
         generation=gen,
+        milestone=milestone,
         step_number=1,
         name="Architecture Scaffolding",
         agent_role="architect",
@@ -77,6 +79,7 @@ def active_generation(db, sample_project, non_staff_user):
     )
     step2 = GenerationStep.objects.create(
         generation=gen,
+        milestone=milestone,
         step_number=2,
         name="Code Implementation",
         agent_role="coder",
@@ -210,8 +213,14 @@ class TestControlCenterStepRetry:
             failed_at=timezone.now(),
             error_message="Agent syntax crash",
         )
+        milestone = GenerationMilestone.objects.create(
+            generation=gen,
+            name="Schema",
+            sequence=1,
+        )
         step = GenerationStep.objects.create(
             generation=gen,
+            milestone=milestone,
             step_number=1,
             name="Schema Generation",
             agent_role="architect",
@@ -263,8 +272,14 @@ class TestControlCenterStepRetry:
             status=GenerationStatus.CANCELLED,
             cancelled_at=timezone.now(),
         )
+        milestone = GenerationMilestone.objects.create(
+            generation=gen,
+            name="Scaffolding",
+            sequence=1,
+        )
         step = GenerationStep.objects.create(
             generation=gen,
+            milestone=milestone,
             step_number=1,
             name="Scaffolding",
             agent_role="architect",
@@ -289,8 +304,14 @@ class TestControlCenterStepRetry:
             prompt="Plugin generation",
             status=GenerationStatus.BUILDING,
         )
+        milestone = GenerationMilestone.objects.create(
+            generation=gen,
+            name="Milestone",
+            sequence=1,
+        )
         step = GenerationStep.objects.create(
             generation=gen,
+            milestone=milestone,
             step_number=1,
             name="Completed Step",
             agent_role="architect",
@@ -315,8 +336,14 @@ class TestControlCenterStepRetry:
             prompt="Plugin generation",
             status=GenerationStatus.BUILDING,
         )
+        milestone = GenerationMilestone.objects.create(
+            generation=gen,
+            name="Milestone",
+            sequence=1,
+        )
         step = GenerationStep.objects.create(
             generation=gen,
+            milestone=milestone,
             step_number=1,
             name="In Flight Step",
             agent_role="coder",
@@ -342,8 +369,14 @@ class TestControlCenterStepRetry:
             status=GenerationStatus.ACTIVE,
             completed_at=timezone.now(),
         )
+        milestone = GenerationMilestone.objects.create(
+            generation=gen,
+            name="Milestone",
+            sequence=1,
+        )
         step = GenerationStep.objects.create(
             generation=gen,
+            milestone=milestone,
             step_number=1,
             name="Failed Step On Done Generation",
             agent_role="security",

@@ -160,3 +160,68 @@ class TestWorkflowLeaseService:
         # Since attempt 1 < max_attempts 3, package is scheduled for retry
         assert pkg.status == WorkPackageStatus.RETRY_WAIT
         assert pkg.next_attempt_at is not None
+
+    def test_release_lease_triggers_cancellation_finalization(self, lease_setup):
+        org, user, gen, run, pkg, attempt = lease_setup
+        now = attempt.started_at
+
+        lease = WorkflowLeaseService.acquire_lease(
+            work_package=pkg,
+            attempt=attempt,
+            worker_id="worker_01",
+            duration_seconds=30,
+            now=now,
+        )
+
+        # Set generation to CANCELLING
+        gen.status = GenerationStatus.CANCELLING
+        gen.cancel_requested_at = now
+        gen.save()
+        run.status = WorkflowRunStatus.CANCELLING
+        run.save()
+
+        # Releasing the lease cooperatively finalizes cancellation deterministically
+        WorkflowLeaseService.release_lease(lease.lease_token, now=now)
+
+        gen.refresh_from_db()
+        run.refresh_from_db()
+        pkg.refresh_from_db()
+        attempt.refresh_from_db()
+
+        assert gen.status == GenerationStatus.CANCELLED
+        assert run.status == WorkflowRunStatus.CANCELLED
+        assert pkg.status == WorkPackageStatus.CANCELLED
+        assert attempt.status == AttemptStatus.CANCELLED
+
+    def test_cancellation_generation_wide_quiescence_check(self, lease_setup):
+        org, user, gen, run, pkg, attempt = lease_setup
+        now = attempt.started_at
+
+        # Acquire a lease on run 1
+        lease1 = WorkflowLeaseService.acquire_lease(
+            work_package=pkg,
+            attempt=attempt,
+            worker_id="worker_01",
+            duration_seconds=30,
+            now=now,
+        )
+
+        # Set generation to CANCELLING
+        gen.status = GenerationStatus.CANCELLING
+        gen.cancel_requested_at = now
+        gen.save()
+
+        # Attempting finalization while lease1 is active returns False
+        from apps.workflows.services.cancellation import WorkflowCancellationService
+        finalized = WorkflowCancellationService.finalize_if_quiescent(gen.id)
+        assert finalized is False
+        gen.refresh_from_db()
+        assert gen.status == GenerationStatus.CANCELLING
+
+        # Release lease1
+        WorkflowLeaseService.release_lease(lease1.lease_token, now=now)
+        gen.refresh_from_db()
+        assert gen.status == GenerationStatus.CANCELLED
+
+        # Repeated finalizer call is idempotent
+        assert WorkflowCancellationService.finalize_if_quiescent(gen.id) is False

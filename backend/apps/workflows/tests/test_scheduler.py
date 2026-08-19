@@ -252,3 +252,89 @@ class TestWorkflowSchedulerService:
         WorkflowSchedulerService.tick(workflow_run_id=run.id)
         p2.refresh_from_db()
         assert p2.status == WorkPackageStatus.READY
+
+    def test_record_candidate_and_failure_expired_lease_rejected(self, workflow_setup):
+        org, user, gen, run, p1, p2, s1, s2 = workflow_setup
+        WorkflowSchedulerService.tick(workflow_run_id=run.id)
+        pkg, attempt, lease = WorkflowSchedulerService.claim_next(worker_id="agent_coder_01", workflow_run_id=run.id)
+
+        # Expire lease manually
+        past_time = timezone.now() - timezone.timedelta(seconds=60)
+        lease.expires_at = past_time
+        lease.save(update_fields=["expires_at"])
+
+        with pytest.raises(ValidationError) as exc:
+            WorkflowSchedulerService.record_candidate_complete(
+                attempt_id=attempt.id,
+                lease_token=lease.lease_token,
+                result_payload={"files": []},
+            )
+        assert exc.value.code == "lease_expired"
+
+        with pytest.raises(ValidationError) as exc_fail:
+            WorkflowSchedulerService.record_attempt_failure(
+                attempt_id=attempt.id,
+                lease_token=lease.lease_token,
+                failure_category="TEST",
+                error_details={"err": "fail"},
+            )
+        assert exc_fail.value.code == "lease_expired"
+
+    def test_record_candidate_complete_during_cancellation_finalizes_generation(self, workflow_setup):
+        org, user, gen, run, p1, p2, s1, s2 = workflow_setup
+        WorkflowSchedulerService.tick(workflow_run_id=run.id)
+        pkg, attempt, lease = WorkflowSchedulerService.claim_next(worker_id="agent_coder_01", workflow_run_id=run.id)
+
+        # Transition generation and run to CANCELLING
+        gen.status = GenerationStatus.CANCELLING
+        gen.cancel_requested_at = timezone.now()
+        gen.save()
+        run.status = WorkflowRunStatus.CANCELLING
+        run.save()
+
+        # Worker calls candidate complete while cancelling
+        updated_pkg = WorkflowSchedulerService.record_candidate_complete(
+            attempt_id=attempt.id,
+            lease_token=lease.lease_token,
+            result_payload={"patch": "partial"},
+        )
+
+        assert updated_pkg.status == WorkPackageStatus.CANCELLED
+        attempt.refresh_from_db()
+        assert attempt.status == AttemptStatus.CANDIDATE_COMPLETE
+        assert attempt.result_payload == {"patch": "partial"}
+
+        # Assert generation and run finalized to CANCELLED
+        gen.refresh_from_db()
+        run.refresh_from_db()
+        assert gen.status == GenerationStatus.CANCELLED
+        assert run.status == WorkflowRunStatus.CANCELLED
+
+    def test_mark_validated_complete_rejects_inconsistent_attempt_truth(self, workflow_setup):
+        org, user, gen, run, p1, p2, s1, s2 = workflow_setup
+        WorkflowSchedulerService.tick(workflow_run_id=run.id)
+        pkg, attempt, lease = WorkflowSchedulerService.claim_next(worker_id="agent_coder_01", workflow_run_id=run.id)
+
+        # Manually force package to CANDIDATE_COMPLETE while attempt is still RUNNING
+        pkg.status = WorkPackageStatus.CANDIDATE_COMPLETE
+        pkg.save(update_fields=["status"])
+
+        with pytest.raises(ValidationError) as exc:
+            WorkflowSchedulerService.mark_validated_complete(
+                work_package_id=pkg.id,
+                validation_evidence={"qa": "pass"},
+            )
+        assert exc.value.code == "invalid_attempt_state"
+
+        # If attempt count differs from latest attempt number
+        attempt.status = AttemptStatus.CANDIDATE_COMPLETE
+        attempt.save(update_fields=["status"])
+        pkg.attempt_count = 99
+        pkg.save(update_fields=["attempt_count"])
+
+        with pytest.raises(ValidationError) as exc_mismatch:
+            WorkflowSchedulerService.mark_validated_complete(
+                work_package_id=pkg.id,
+                validation_evidence={"qa": "pass"},
+            )
+        assert exc_mismatch.value.code == "attempt_count_mismatch"

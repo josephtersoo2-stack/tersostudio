@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from apps.generations.enums import AgentRunStatus, GenerationStatus, StepStatus
 from apps.generations.exceptions import StepNotExecutableError
-from apps.generations.models import AgentRun, Generation, GenerationStep
+from apps.generations.models import AgentRun, Generation, GenerationMilestone, GenerationStep
 from apps.generations.services.execution_service import ExecutionService
 from apps.organizations.services import ensure_personal_organization
 from apps.projects.services import ProjectService
@@ -23,8 +23,10 @@ class ExecutionServiceTests(TestCase):
 
     def setUp(self):
         self.user = User.objects.create_user(
-            email="lead.developer@tersuite.com",
-            password="StrongPassword123!",
+            email="developer@tersuite.com",
+            password="Password123!",
+            first_name="Dev",
+            last_name="Tester",
         )
         self.org = ensure_personal_organization(self.user)
         self.project = ProjectService.create_project(
@@ -40,8 +42,14 @@ class ExecutionServiceTests(TestCase):
             prompt="Generate a custom user role manager plugin.",
             status=GenerationStatus.DRAFT,
         )
+        self.milestone = GenerationMilestone.objects.create(
+            generation=self.generation,
+            name="Architecture",
+            sequence=1,
+        )
         self.step = GenerationStep.objects.create(
             generation=self.generation,
+            milestone=self.milestone,
             step_number=1,
             name="Architecture Design",
             agent_role="architect",

@@ -5,7 +5,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.generations.enums import ArtifactType, GenerationStatus, StepStatus
-from apps.generations.models import AgentRun, Artifact, Generation, GenerationStep, Workspace
+from apps.generations.models import AgentRun, Artifact, Generation, GenerationMilestone, GenerationStep, Workspace
 from apps.organizations.services import ensure_personal_organization
 from apps.projects.services import ProjectService
 
@@ -39,8 +39,14 @@ class MultiTenantAuthorizationTests(TestCase):
             prompt="Build private custom plugin for Tenant A.",
             status=GenerationStatus.DRAFT,
         )
+        self.milestone_a = GenerationMilestone.objects.create(
+            generation=self.generation_a,
+            name="Milestone A",
+            sequence=1,
+        )
         self.step_a = GenerationStep.objects.create(
             generation=self.generation_a,
+            milestone=self.milestone_a,
             step_number=1,
             name="Architecture A",
             agent_role="architect",
