@@ -6,6 +6,9 @@
 - **Baseline Main SHA**: `6ab818db61f4fc1eaa8c6ff25574204f95a027e5`
 - **Reviewed Head**: `e8aeaf34e6daa4bbf3eb1cd7755e7a1398e53bb8`
 - **Feature Branch**: `feature/b3-durable-workflow-kernel`
+- **Published B3 Commit**: `4b3c192c3f5c3eb927d55422a101eaf34fcbbfc1`
+- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32238142049](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32238142049)
+- **CI Status & Conclusion**: Completed / Success (Job ID: `96022600402`, Duration: 2m 18s)
 - **Django System Check**: 0 Issues (`System check identified no issues (0 silenced)`)
 - **Migration Consistency**: Clean (`makemigrations --check --dry-run` reports `No changes detected`)
 - **Migration Verification**: Real Django `MigrationExecutor` forward & reverse test passed in `backend/tests/migrations/test_b3_workflow_kernel_migration.py`
