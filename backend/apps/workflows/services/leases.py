@@ -218,12 +218,11 @@ class WorkflowLeaseService:
                     attempt.save(update_fields=["status", "completed_at", "failure_category", "error_details", "updated_at"])
 
                 if package:
-                    package.state_version += 1
                     run = package.workflow_run
                     gen = run.generation
 
                     is_cancelling = (
-                        package.cancel_requested_at
+                        package.cancel_requested_at is not None
                         or run.status == WorkflowRunStatus.CANCELLING
                         or gen.status == GenerationStatus.CANCELLING
                     )
@@ -231,6 +230,7 @@ class WorkflowLeaseService:
                     if is_cancelling:
                         package.status = WorkPackageStatus.CANCELLED
                         package.completed_at = current_time
+                        package.state_version += 1
                         package.save(update_fields=["status", "completed_at", "state_version", "updated_at"])
                         OutboxService.enqueue_event(
                             organization=package.organization,
@@ -267,6 +267,7 @@ class WorkflowLeaseService:
                         package.failure_category = "TIMEOUT"
                         package.error_message = "Work package execution timed out and exhausted retries."
                         package.completed_at = current_time
+                        package.state_version += 1
                         package.save(update_fields=[
                             "status",
                             "failure_category",

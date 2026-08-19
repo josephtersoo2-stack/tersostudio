@@ -136,6 +136,7 @@ class TestWorkflowLeaseService:
     def test_reap_expired_leases_and_schedule_retry(self, lease_setup):
         org, user, gen, run, pkg, attempt = lease_setup
         now = attempt.started_at
+        initial_version = pkg.state_version
 
         lease = WorkflowLeaseService.acquire_lease(
             work_package=pkg,
@@ -160,6 +161,37 @@ class TestWorkflowLeaseService:
         # Since attempt 1 < max_attempts 3, package is scheduled for retry
         assert pkg.status == WorkPackageStatus.RETRY_WAIT
         assert pkg.next_attempt_at is not None
+        # Assert state_version delta is exactly +1
+        assert pkg.state_version == initial_version + 1
+        assert pkg.attempt_count == 1
+
+    def test_reap_expired_leases_cancellation_and_terminal_branches(self, lease_setup):
+        org, user, gen, run, pkg, attempt = lease_setup
+        now = attempt.started_at
+
+        # 1. Test terminal exhaustion (max_attempts = 1)
+        pkg.max_attempts = 1
+        pkg.attempt_count = 1
+        pkg.save(update_fields=["max_attempts", "attempt_count"])
+        initial_version = pkg.state_version
+
+        lease = WorkflowLeaseService.acquire_lease(
+            work_package=pkg,
+            attempt=attempt,
+            worker_id="worker_01",
+            duration_seconds=30,
+            now=now,
+        )
+
+        reap_time = now + timedelta(seconds=40)
+        reaped = WorkflowLeaseService.reap_expired_leases(now=reap_time)
+        assert reaped == 1
+
+        pkg.refresh_from_db()
+        attempt.refresh_from_db()
+        assert pkg.status == WorkPackageStatus.TIMED_OUT
+        assert pkg.state_version == initial_version + 1
+        assert attempt.status == AttemptStatus.TIMED_OUT
 
     def test_release_lease_triggers_cancellation_finalization(self, lease_setup):
         org, user, gen, run, pkg, attempt = lease_setup
