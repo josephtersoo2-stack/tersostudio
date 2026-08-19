@@ -5,8 +5,10 @@
 - **Status**: COMPLETED & VERIFIED
 - **Required Base SHA (`main`)**: `6ab818db61f4fc1eaa8c6ff25574204f95a027e5`
 - **Feature Branch**: `feature/b3-durable-workflow-kernel`
-- **Implementation Commit**: Pending push & independent review
-- **Local Test Suite Status**: 264 Passed, 1 Skipped (live OpenHands test skipped as designed when no LLM key present), 0 Failed
+- **Published B3 Commit**: `55452391f70bfa77a7fdfb58bdca3622bffffad9`
+- **GitHub Actions CI Run**: [https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32231661861](https://github.com/josephtersoo2-stack/tersostudio/actions/runs/32231661861)
+- **CI Status & Conclusion**: Completed / Success (All steps passed in 1m 56s)
+- **Backend Test Suite Status**: 264 Passed, 1 Skipped (live OpenHands test skipped as designed when no LLM key present), 0 Failed
 - **Django System Check**: 0 Issues
 - **Migration Consistency Check**: Clean (`makemigrations --check --dry-run` reported No changes detected)
 - **Bidirectional Migration Verification**: Forward and Reverse verification passed via `backend/tests/migrations/test_b3_workflow_kernel_migration.py`
