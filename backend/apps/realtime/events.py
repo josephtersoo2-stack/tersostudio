@@ -6,16 +6,37 @@ from typing import Any, Dict, Optional
 
 
 class EventType:
-    """Normalized event types across Tersuite Studio and Agent Runtime."""
+    """Normalized event types across Tersuite Studio, Durable Workflows, and Agent Runtime."""
 
-    # Generation events
+    # Generation events (Lifecycle & State Machine)
     GENERATION_CREATED = "generation.created"
     GENERATION_STARTED = "generation.started"
+    GENERATION_STATE_CHANGED = "generation.state_changed"
+    GENERATION_PAUSED = "generation.paused"
+    GENERATION_RESUMED = "generation.resumed"
+    GENERATION_CANCELLATION_REQUESTED = "generation.cancellation_requested"
+    GENERATION_CANCELLED = "generation.cancelled"
+    GENERATION_FAILED = "generation.failed"
+    GENERATION_TIMED_OUT = "generation.timed_out"
+    GENERATION_BLOCKED = "generation.blocked"
     GENERATION_STEP_STARTED = "generation.step_started"
     GENERATION_STEP_COMPLETED = "generation.step_completed"
     GENERATION_COMPLETED = "generation.completed"
-    GENERATION_FAILED = "generation.failed"
-    GENERATION_CANCELLED = "generation.cancelled"
+
+    # Workflow Run events
+    WORKFLOW_RUN_CREATED = "workflow.run_created"
+    WORKFLOW_RUN_STATUS_CHANGED = "workflow.run_status_changed"
+
+    # Work Package events
+    WORK_PACKAGE_READY = "work_package.ready"
+    WORK_PACKAGE_LEASED = "work_package.leased"
+    WORK_PACKAGE_ATTEMPT_STARTED = "work_package.attempt_started"
+    WORK_PACKAGE_CANDIDATE_COMPLETE = "work_package.candidate_complete"
+    WORK_PACKAGE_COMPLETED = "work_package.completed"
+    WORK_PACKAGE_RETRY_SCHEDULED = "work_package.retry_scheduled"
+    WORK_PACKAGE_FAILED = "work_package.failed"
+    WORK_PACKAGE_CANCELLED = "work_package.cancelled"
+    WORK_PACKAGE_TIMED_OUT = "work_package.timed_out"
 
     # Agent Lifecycle events
     AGENT_STARTED = "agent.started"

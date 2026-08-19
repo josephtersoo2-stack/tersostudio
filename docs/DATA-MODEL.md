@@ -178,3 +178,133 @@ The Phase 2 durable domain architecture organizes multi-agent WordPress plugin e
 | `wordpress_version` | `VARCHAR(50)` | No | `""` | WordPress Core version |
 | `php_version` | `VARCHAR(50)` | No | `""` | PHP version |
 | `checksum_sha256` | `VARCHAR(64)` | No | — | Deterministic SHA-256 payload checksum |
+
+---
+
+## 4. B3 Workflow Kernel & Coordination Models
+
+### 4.1. `generations_generationmilestone`
+- **Model**: `apps.generations.models.GenerationMilestone`
+- **Inheritance**: `OrganizationOwnedModel`
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `organization_id` | `UUID` | No | — | FK $\rightarrow$ `organizations_organization.id` |
+| `generation_id` | `UUID` | No | — | FK $\rightarrow$ `generations_generation.id` |
+| `sequence` | `INTEGER` | No | — | Sequence order within generation |
+| `name` | `VARCHAR(255)` | No | — | Milestone label |
+| `status` | `VARCHAR(50)` | No | `'PENDING'` | Lifecycle status |
+
+### 4.2. `generations_generationstatetransition`
+- **Model**: `apps.generations.models.GenerationStateTransition`
+- **Inheritance**: `models.Model` (Immutable Audit)
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `generation_id` | `UUID` | No | — | FK $\rightarrow$ `generations_generation.id` |
+| `sequence` | `INTEGER` | No | — | Monotonic sequence number |
+| `from_status` | `VARCHAR(50)` | No | — | Prior state |
+| `to_status` | `VARCHAR(50)` | No | — | New state |
+| `command_id` | `UUID` | Yes | `NULL` | Optional triggering command |
+| `created_at` | `TIMESTAMPTZ` | No | `now()` | Transition timestamp |
+
+### 4.3. `workflows_workflowrun`
+- **Model**: `apps.workflows.models.WorkflowRun`
+- **Inheritance**: `OrganizationOwnedModel`
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `organization_id` | `UUID` | No | — | FK $\rightarrow$ `organizations_organization.id` |
+| `generation_id` | `UUID` | No | — | FK $\rightarrow$ `generations_generation.id` |
+| `run_number` | `INTEGER` | No | `1` | Monotonic run number per generation |
+| `status` | `VARCHAR(50)` | No | `'PENDING'` | Workflow run status |
+
+### 4.4. `workflows_workpackage`
+- **Model**: `apps.workflows.models.WorkPackage`
+- **Inheritance**: `OrganizationOwnedModel`
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `organization_id` | `UUID` | No | — | FK $\rightarrow$ `organizations_organization.id` |
+| `workflow_run_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workflowrun.id` |
+| `key` | `VARCHAR(100)` | No | — | Unique key within workflow run |
+| `status` | `VARCHAR(50)` | No | `'PENDING'` | Package execution status |
+| `max_attempts` | `INTEGER` | No | `3` | Maximum retry budget |
+| `current_attempt_number` | `INTEGER` | No | `0` | Monotonic attempt counter |
+
+### 4.5. `workflows_workpackagedependency`
+- **Model**: `apps.workflows.models.WorkPackageDependency`
+- **Inheritance**: `models.Model` (Immutable DAG Edge)
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `workflow_run_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workflowrun.id` |
+| `predecessor_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workpackage.id` |
+| `successor_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workpackage.id` |
+| `dependency_type` | `VARCHAR(50)` | No | `'REQUIRED'` | Edge rule (`REQUIRED`, `OPTIONAL`, `ON_FAILURE`) |
+
+### 4.6. `workflows_workpackageattempt`
+- **Model**: `apps.workflows.models.WorkPackageAttempt`
+- **Inheritance**: `models.Model` (Append-Only Attempt History)
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `work_package_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workpackage.id` |
+| `attempt_number` | `INTEGER` | No | — | Monotonic attempt index |
+| `worker_id` | `VARCHAR(255)` | No | — | Worker identifier |
+| `status` | `VARCHAR(50)` | No | `'RUNNING'` | Attempt status |
+
+### 4.7. `workflows_workpackagelease`
+- **Model**: `apps.workflows.models.WorkPackageLease`
+- **Inheritance**: `models.Model` (Active Worker Concurrency Fence)
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `work_package_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workpackage.id` |
+| `attempt_id` | `UUID` | No | — | FK $\rightarrow$ `workflows_workpackageattempt.id` |
+| `worker_id` | `VARCHAR(255)` | No | — | Worker identity holding lease |
+| `lease_token` | `UUID` | No | `uuid4()` | Opaque token for heartbeat/release |
+| `acquired_at` | `TIMESTAMPTZ` | No | `now()` | Lease creation time |
+| `expires_at` | `TIMESTAMPTZ` | No | — | Expiry threshold |
+| `released_at` | `TIMESTAMPTZ` | Yes | `NULL` | Release timestamp |
+
+### 4.8. `workflows_workflowcommand`
+- **Model**: `apps.workflows.models.WorkflowCommand`
+- **Inheritance**: `OrganizationOwnedModel` (Idempotency Ledger)
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `UUID` | No | `uuid4()` | Primary Key (UUIDv4) |
+| `organization_id` | `UUID` | No | — | FK $\rightarrow$ `organizations_organization.id` |
+| `generation_id` | `UUID` | No | — | FK $\rightarrow$ `generations_generation.id` |
+| `command_type` | `VARCHAR(50)` | No | — | Command type (`PAUSE`, `RESUME`, `CANCEL`, `RETRY`) |
+| `idempotency_key` | `VARCHAR(255)` | No | — | Client or generated idempotency key |
+| `request_hash` | `VARCHAR(64)` | No | — | SHA-256 hash of payload |
+| `status` | `VARCHAR(50)` | No | `'APPLIED'` | Command execution outcome |
+| `response_payload` | `JSONField` | No | `{}` | Cached response for replay |
+
+### 4.9. `workflows_outboxevent`
+- **Model**: `apps.workflows.models.OutboxEvent`
+- **Inheritance**: `models.Model` (Transactional Outbox)
+
+| Column | Type | Nullable | Default | Description |
+|---|---|---|---|---|
+| `id` | `BIGSERIAL` | No | — | Auto-increment Primary Key |
+| `event_id` | `UUID` | No | `uuid4()` | Stable unique event UUID |
+| `organization_id` | `UUID` | No | — | FK $\rightarrow$ `organizations_organization.id` |
+| `generation_id` | `UUID` | Yes | `NULL` | Optional FK $\rightarrow$ `generations_generation.id` |
+| `aggregate_type` | `VARCHAR(100)` | No | — | Aggregate entity type |
+| `aggregate_id` | `VARCHAR(255)` | No | — | Target entity ID |
+| `event_type` | `VARCHAR(100)` | No | — | Normalized event name |
+| `payload` | `JSONField` | No | `{}` | Sanitized event payload |
+| `occurred_at` | `TIMESTAMPTZ` | No | `now()` | Origin timestamp |
+| `available_at` | `TIMESTAMPTZ` | No | `now()` | Delivery eligibility threshold |
+| `published_at` | `TIMESTAMPTZ` | Yes | `NULL` | Dispatch confirmation time |
+

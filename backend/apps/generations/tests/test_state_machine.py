@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 
 from apps.generations.enums import GenerationStatus
 from apps.generations.exceptions import InvalidStateTransitionError
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationStateTransition
 from apps.generations.services.state_machine import GenerationStateMachine
 from apps.organizations.services import ensure_personal_organization
 from apps.projects.services import ProjectService
@@ -15,7 +15,7 @@ User = get_user_model()
 
 
 class GenerationStateMachineTests(TestCase):
-    """Test suite verifying strict generation state machine transitions and milestones."""
+    """Test suite verifying strict generation state machine transitions and audit records."""
 
     databases = {"default"}
 
@@ -40,25 +40,37 @@ class GenerationStateMachineTests(TestCase):
         )
 
     def test_full_forward_lifecycle_progression(self):
-        """Verify the complete forward lifecycle progression from DRAFT to COMPLETED."""
+        """Verify the complete forward lifecycle progression through B3 canonical states."""
         flow = [
-            GenerationStatus.SPECIFICATION,
+            GenerationStatus.DISCOVERY,
+            GenerationStatus.SPECIFICATION_DRAFT,
+            GenerationStatus.PLAN_DRAFT,
+            GenerationStatus.AWAITING_APPROVAL,
             GenerationStatus.APPROVED,
-            GenerationStatus.PLANNING,
+            GenerationStatus.SCHEDULED,
             GenerationStatus.BUILDING,
-            GenerationStatus.TESTING,
-            GenerationStatus.REVIEW,
-            GenerationStatus.PACKAGING,
-            GenerationStatus.COMPLETED,
+            GenerationStatus.INTEGRATING,
+            GenerationStatus.REVIEWING,
+            GenerationStatus.SANDBOX_QA,
+            GenerationStatus.RELEASE_CANDIDATE,
+            GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
+            GenerationStatus.STAGED,
+            GenerationStatus.ACTIVE,
         ]
 
         gen = self.generation
+        expected_version = 0
+        expected_seq = 1
+
         for target in flow:
+            expected_version += 1
             gen = GenerationStateMachine.transition(gen, target_status=target, reason=f"Moved to {target}")
             self.assertEqual(gen.status, target)
+            self.assertEqual(gen.state_version, expected_version)
+            self.assertEqual(gen.next_transition_sequence, expected_seq + 1)
+            expected_seq += 1
 
-        self.assertIsNotNone(gen.completed_at)
-        self.assertEqual(len(gen.metadata["state_history"]), len(flow))
+        self.assertEqual(gen.state_transitions.count(), len(flow))
 
     def test_invalid_transition_raises_error(self):
         """Verify skipping required phases raises InvalidStateTransitionError."""
@@ -69,22 +81,32 @@ class GenerationStateMachineTests(TestCase):
                 target_status=GenerationStatus.BUILDING,
             )
 
-        # Move to COMPLETED and verify terminal state cannot transition out
-        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.TESTING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.REVIEW)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PACKAGING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.COMPLETED)
+        # Move to ACTIVE (terminal success) and verify terminal state cannot transition out
+        gen = self.generation
+        for target in [
+            GenerationStatus.DISCOVERY,
+            GenerationStatus.SPECIFICATION_DRAFT,
+            GenerationStatus.PLAN_DRAFT,
+            GenerationStatus.AWAITING_APPROVAL,
+            GenerationStatus.APPROVED,
+            GenerationStatus.SCHEDULED,
+            GenerationStatus.BUILDING,
+            GenerationStatus.INTEGRATING,
+            GenerationStatus.REVIEWING,
+            GenerationStatus.SANDBOX_QA,
+            GenerationStatus.RELEASE_CANDIDATE,
+            GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
+            GenerationStatus.STAGED,
+            GenerationStatus.ACTIVE,
+        ]:
+            gen = GenerationStateMachine.transition(gen, target_status=target)
 
         with self.assertRaises(InvalidStateTransitionError):
-            GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
+            GenerationStateMachine.transition(gen, GenerationStatus.PLAN_DRAFT)
 
     def test_failure_transition_records_timestamps_and_category(self):
         """Verify FAILED transition records failed_at, error message, and failure category."""
-        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
+        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.DISCOVERY)
         gen = GenerationStateMachine.transition(
             gen,
             target_status=GenerationStatus.FAILED,
@@ -99,47 +121,50 @@ class GenerationStateMachineTests(TestCase):
         self.assertEqual(gen.failure_category, "NETWORK_CONNECTION")
 
     def test_pause_and_resume_lifecycle(self):
-        """Verify PAUSED transition sets paused_at, and resuming clears it."""
-        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
+        """Verify PAUSED transition sets paused_at, resume_status, and resuming restores state."""
+        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.DISCOVERY)
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.SPECIFICATION_DRAFT)
 
         # Pause
         gen = GenerationStateMachine.transition(gen, GenerationStatus.PAUSED, reason="Waiting for user review")
         self.assertEqual(gen.status, GenerationStatus.PAUSED)
+        self.assertEqual(gen.resume_status, GenerationStatus.SPECIFICATION_DRAFT)
         self.assertIsNotNone(gen.paused_at)
 
-        # Resume to PLANNING
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING, reason="Resuming execution")
-        self.assertEqual(gen.status, GenerationStatus.PLANNING)
+        # Resume
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.SPECIFICATION_DRAFT, reason="Resuming execution")
+        self.assertEqual(gen.status, GenerationStatus.SPECIFICATION_DRAFT)
         self.assertIsNone(gen.paused_at)
 
-    def test_repair_loops_from_testing_and_review_to_building(self):
-        """Verify repair loops allowing backward progression to BUILDING for critic/test fixes."""
-        gen = GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.APPROVED)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.PLANNING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.TESTING)
+    def test_repair_loops_from_sandbox_and_reviewing_to_correcting(self):
+        """Verify repair loops allowing progression to CORRECTING -> BUILDING for fixes."""
+        gen = self.generation
+        for target in [
+            GenerationStatus.DISCOVERY,
+            GenerationStatus.SPECIFICATION_DRAFT,
+            GenerationStatus.PLAN_DRAFT,
+            GenerationStatus.AWAITING_APPROVAL,
+            GenerationStatus.APPROVED,
+            GenerationStatus.SCHEDULED,
+            GenerationStatus.BUILDING,
+            GenerationStatus.INTEGRATING,
+            GenerationStatus.REVIEWING,
+        ]:
+            gen = GenerationStateMachine.transition(gen, target_status=target)
 
-        # Test failure repair loop: TESTING -> BUILDING
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING, reason="Fixing PHP linting syntax error")
+        # Reviewing findings require correction: REVIEWING -> CORRECTING -> BUILDING
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.CORRECTING, reason="Reviewer findings received")
+        self.assertEqual(gen.status, GenerationStatus.CORRECTING)
+
+        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING, reason="Applying reviewer repairs")
         self.assertEqual(gen.status, GenerationStatus.BUILDING)
 
-        # Back to TESTING -> REVIEW
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.TESTING)
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.REVIEW)
-
-        # Security review repair loop: REVIEW -> BUILDING
-        gen = GenerationStateMachine.transition(gen, GenerationStatus.BUILDING, reason="Patching CSRF missing nonce")
-        self.assertEqual(gen.status, GenerationStatus.BUILDING)
-
-    def test_api_transition_endpoint_success(self):
-        """Verify POST /api/v1/generations/{id}/transition/ executes valid state changes."""
+    def test_api_transition_endpoint_direct_progression_returns_409(self):
+        """Verify POST /api/v1/generations/{id}/transition/ rejects direct forward state forcing with 409."""
         self.client.force_authenticate(user=self.user)
         payload = {
-            "target_status": "SPECIFICATION",
-            "reason": "Feature discovery completed.",
+            "target_status": "BUILDING",
+            "reason": "Direct progression attempt.",
         }
         response = self.client.post(
             f"/api/v1/generations/{self.generation.id}/transition/",
@@ -148,47 +173,55 @@ class GenerationStateMachineTests(TestCase):
             HTTP_X_ORGANIZATION_ID=str(self.org.id),
         )
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["status"], "SPECIFICATION")
-
-    def test_api_transition_endpoint_invalid_returns_400(self):
-        """Verify invalid transition via API returns HTTP 400 Bad Request."""
-        self.client.force_authenticate(user=self.user)
-        payload = {
-            "target_status": "COMPLETED",  # Cannot jump from DRAFT to COMPLETED
-            "reason": "Skipping all steps.",
-        }
-        response = self.client.post(
-            f"/api/v1/generations/{self.generation.id}/transition/",
-            payload,
-            format="json",
-            HTTP_X_ORGANIZATION_ID=str(self.org.id),
-        )
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(response.data["error"]["code"], "invalid_state_transition")
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(response.data["error"]["code"], "direct_transition_requires_coordinator")
 
     def test_api_pause_cancel_retry_actions(self):
-        """Verify custom action endpoints /pause/, /cancel/, /retry/."""
+        """Verify custom action endpoints /pause/, /cancel/, /retry/ with Idempotency-Key."""
         self.client.force_authenticate(user=self.user)
 
-        # Move to PLANNING
-        GenerationStateMachine.transition(self.generation, GenerationStatus.SPECIFICATION)
-        GenerationStateMachine.transition(self.generation, GenerationStatus.APPROVED)
-        GenerationStateMachine.transition(self.generation, GenerationStatus.PLANNING)
+        # Transition to SCHEDULED -> BUILDING
+        gen = self.generation
+        for target in [
+            GenerationStatus.DISCOVERY,
+            GenerationStatus.SPECIFICATION_DRAFT,
+            GenerationStatus.PLAN_DRAFT,
+            GenerationStatus.AWAITING_APPROVAL,
+            GenerationStatus.APPROVED,
+            GenerationStatus.SCHEDULED,
+            GenerationStatus.BUILDING,
+        ]:
+            gen = GenerationStateMachine.transition(gen, target_status=target)
 
-        # Action: Pause
+        # Action: Pause with Idempotency-Key
         pause_resp = self.client.post(
             f"/api/v1/generations/{self.generation.id}/pause/",
+            data={"reason": "Operator pause"},
+            format="json",
             HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            HTTP_IDEMPOTENCY_KEY="pause_key_001",
         )
         self.assertEqual(pause_resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(pause_resp.data["status"], "PAUSED")
+        self.assertEqual(pause_resp.data["generation"]["status"], "PAUSED")
 
-        # Action: Cancel
+        # Action: Resume with Idempotency-Key
+        resume_resp = self.client.post(
+            f"/api/v1/generations/{self.generation.id}/resume/",
+            data={"reason": "Operator resume"},
+            format="json",
+            HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            HTTP_IDEMPOTENCY_KEY="resume_key_001",
+        )
+        self.assertEqual(resume_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resume_resp.data["generation"]["status"], "BUILDING")
+
+        # Action: Cancel with Idempotency-Key
         cancel_resp = self.client.post(
             f"/api/v1/generations/{self.generation.id}/cancel/",
+            data={"reason": "Operator cancel"},
+            format="json",
             HTTP_X_ORGANIZATION_ID=str(self.org.id),
+            HTTP_IDEMPOTENCY_KEY="cancel_key_001",
         )
         self.assertEqual(cancel_resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(cancel_resp.data["status"], "CANCELLED")
+        self.assertEqual(cancel_resp.data["generation"]["status"], "CANCELLED")

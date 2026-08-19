@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     "apps.projects.apps.ProjectsConfig",
     "apps.conversations.apps.ConversationsConfig",
     "apps.generations.apps.GenerationsConfig",
+    "apps.workflows.apps.WorkflowsConfig",
     # Control Center (CC-01)
     "apps.control_center.apps.ControlCenterConfig",
 ]
@@ -258,3 +259,12 @@ LOGGING = {
         },
     },
 }
+
+# B3 Durable Workflow & Outbox Configuration
+WORKFLOW_LEASE_SECONDS = _parse_positive_int("WORKFLOW_LEASE_SECONDS", 60)
+WORKFLOW_SCHEDULER_BATCH_SIZE = _parse_positive_int("WORKFLOW_SCHEDULER_BATCH_SIZE", 20)
+WORKFLOW_MAX_ATTEMPTS = _parse_positive_int("WORKFLOW_MAX_ATTEMPTS", 3)
+WORKFLOW_RETRY_BASE_SECONDS = _parse_positive_int("WORKFLOW_RETRY_BASE_SECONDS", 30)
+WORKFLOW_RETRY_MAX_SECONDS = _parse_positive_int("WORKFLOW_RETRY_MAX_SECONDS", 900)
+OUTBOX_BATCH_SIZE = _parse_positive_int("OUTBOX_BATCH_SIZE", 100)
+OUTBOX_CLAIM_SECONDS = _parse_positive_int("OUTBOX_CLAIM_SECONDS", 60)

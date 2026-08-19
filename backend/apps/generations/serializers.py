@@ -2,8 +2,16 @@
 from rest_framework import serializers
 
 from apps.projects.models import Project
-from .enums import GenerationStatus
-from .models import AgentRun, Artifact, Generation, GenerationStep, Workspace
+from .enums import GenerationStatus, MilestoneStatus
+from .models import (
+    AgentRun,
+    Artifact,
+    Generation,
+    GenerationMilestone,
+    GenerationStateTransition,
+    GenerationStep,
+    Workspace,
+)
 
 
 class ArtifactSerializer(serializers.ModelSerializer):
@@ -87,6 +95,7 @@ class GenerationStepSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "generation",
+            "milestone",
             "step_number",
             "name",
             "agent_role",
@@ -107,6 +116,52 @@ class GenerationStepSerializer(serializers.ModelSerializer):
         return obj.runs.count()
 
 
+class GenerationMilestoneSerializer(serializers.ModelSerializer):
+    """Serializer for GenerationMilestone groupings (Read-Only)."""
+
+    steps_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GenerationMilestone
+        fields = [
+            "id",
+            "generation",
+            "sequence",
+            "name",
+            "status",
+            "metadata",
+            "started_at",
+            "completed_at",
+            "steps_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_steps_count(self, obj) -> int:
+        return obj.steps.count()
+
+
+class GenerationStateTransitionSerializer(serializers.ModelSerializer):
+    """Serializer for immutable GenerationStateTransition audit entries (Read-Only)."""
+
+    class Meta:
+        model = GenerationStateTransition
+        fields = [
+            "id",
+            "generation",
+            "sequence",
+            "from_status",
+            "to_status",
+            "command_id",
+            "actor",
+            "reason",
+            "metadata",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
 class GenerationListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for listing generations."""
 
@@ -117,6 +172,7 @@ class GenerationListSerializer(serializers.ModelSerializer):
     user = serializers.UUIDField(source="created_by.id", read_only=True)
     steps_count = serializers.SerializerMethodField()
     artifacts_count = serializers.SerializerMethodField()
+    milestones_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Generation
@@ -130,12 +186,15 @@ class GenerationListSerializer(serializers.ModelSerializer):
             "updated_by_id",
             "prompt",
             "status",
+            "state_version",
             "current_step_number",
             "total_steps",
             "steps_count",
             "artifacts_count",
+            "milestones_count",
             "failure_category",
             "error_message",
+            "status_changed_at",
             "created_at",
             "updated_at",
             "completed_at",
@@ -151,6 +210,9 @@ class GenerationListSerializer(serializers.ModelSerializer):
     def get_artifacts_count(self, obj) -> int:
         return obj.artifacts.count()
 
+    def get_milestones_count(self, obj) -> int:
+        return obj.milestones.count()
+
 
 class GenerationDetailSerializer(serializers.ModelSerializer):
     """Comprehensive serializer for Generation details with nested children."""
@@ -160,9 +222,11 @@ class GenerationDetailSerializer(serializers.ModelSerializer):
     created_by_id = serializers.UUIDField(source="created_by.id", read_only=True)
     updated_by_id = serializers.UUIDField(source="updated_by.id", read_only=True)
     user = serializers.UUIDField(source="created_by.id", read_only=True)
+    milestones = GenerationMilestoneSerializer(many=True, read_only=True)
     steps = GenerationStepSerializer(many=True, read_only=True)
     workspace = WorkspaceSerializer(read_only=True)
     artifacts = ArtifactSerializer(many=True, read_only=True)
+    state_transitions = GenerationStateTransitionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Generation
@@ -176,14 +240,22 @@ class GenerationDetailSerializer(serializers.ModelSerializer):
             "updated_by_id",
             "prompt",
             "status",
+            "state_version",
+            "next_transition_sequence",
+            "status_changed_at",
+            "resume_status",
+            "cancel_requested_at",
+            "timed_out_at",
             "current_step_number",
             "total_steps",
             "metadata",
             "error_message",
             "failure_category",
+            "milestones",
             "steps",
             "workspace",
             "artifacts",
+            "state_transitions",
             "completed_at",
             "cancelled_at",
             "failed_at",
@@ -240,8 +312,7 @@ class GenerationCreateSerializer(serializers.ModelSerializer):
             **validated_data,
         )
 
-        # Provision initial workspace metadata (metadata initialization only;
-        # does not provision runtime Docker containers or WordPress instances)
+        # Provision initial workspace metadata (metadata initialization only)
         Workspace.objects.create(
             generation=generation,
             workspace_path=f"workspaces/{generation.id}",

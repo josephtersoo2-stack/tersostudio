@@ -4,9 +4,9 @@ The audit found `group_send` was never called anywhere — the Channels
 transport (consumers.py, routing.py) existed with nothing producing into
 it. This is that producer.
 
-Every future event source (this execution pipeline, and later the
-multi-agent coordinator, security scans, packaging, etc.) should publish
-through GenerationEventPublisher rather than calling
+Every future event source (this execution pipeline, the durable workflow outbox,
+and later the multi-agent coordinator, security scans, packaging, etc.) should
+publish through GenerationEventPublisher rather than calling
 channel_layer.group_send directly, so the event contract stays owned in
 one place — see AGENTS.md's realtime event normalization boundary.
 """
@@ -77,4 +77,39 @@ class GenerationEventPublisher:
         except Exception:
             logger.exception(
                 "Failed to publish event %s to group %s", event.event_type, group_name,
+            )
+
+    def publish_durable(self, event: NormalizedEvent) -> None:
+        """Broadcast `event` to its generation's group, raising on failure.
+
+        Used by the transactional outbox dispatcher. If the channel layer is
+        unavailable or group_send fails, this raises an exception so the outbox
+        dispatcher knows to keep the event pending and retry.
+        """
+        if self._channel_layer is None:
+            raise RuntimeError("No channel layer configured; cannot publish durable event.")
+
+        if not event.generation_id:
+            # If no generation_id, drop safely or route to system broadcast
+            return
+
+        group_name = f"events_{event.generation_id}"
+        message = {"type": "broadcast_event", "data": event.to_dict()}
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # Run in executor or sync wrapper
+            fut = asyncio.run_coroutine_threadsafe(
+                self._channel_layer.group_send(group_name, message),
+                loop,
+            )
+            fut.result(timeout=10.0)
+        else:
+            async_to_sync(self._channel_layer.group_send)(
+                group_name,
+                message,
             )

@@ -1,6 +1,14 @@
-"""Django admin registration for Generation, GenerationStep, AgentRun, Workspace, and Artifact models."""
+"""Django admin registration for Generation, Milestone, StateTransition, GenerationStep, AgentRun, Workspace, and Artifact models."""
 from django.contrib import admin
-from .models import AgentRun, Artifact, Generation, GenerationStep, Workspace
+from .models import (
+    AgentRun,
+    Artifact,
+    Generation,
+    GenerationMilestone,
+    GenerationStateTransition,
+    GenerationStep,
+    Workspace,
+)
 
 
 class GenerationStepInline(admin.TabularInline):
@@ -9,7 +17,17 @@ class GenerationStepInline(admin.TabularInline):
     model = GenerationStep
     extra = 0
     readonly_fields = ("id", "created_at", "updated_at")
-    fields = ("step_number", "name", "agent_role", "status", "started_at", "completed_at")
+    fields = ("step_number", "milestone", "name", "agent_role", "status", "started_at", "completed_at")
+    show_change_link = True
+
+
+class GenerationMilestoneInline(admin.TabularInline):
+    """Inline view for GenerationMilestone items inside Generation."""
+
+    model = GenerationMilestone
+    extra = 0
+    readonly_fields = ("id", "created_at", "updated_at")
+    fields = ("sequence", "name", "status", "started_at", "completed_at")
     show_change_link = True
 
 
@@ -43,6 +61,7 @@ class GenerationAdmin(admin.ModelAdmin):
         "organization",
         "created_by",
         "status",
+        "state_version",
         "current_step_number",
         "total_steps",
         "created_at",
@@ -51,6 +70,9 @@ class GenerationAdmin(admin.ModelAdmin):
     search_fields = ("id", "prompt", "project__name", "organization__name", "created_by__email", "error_message")
     readonly_fields = (
         "id",
+        "state_version",
+        "next_transition_sequence",
+        "status_changed_at",
         "created_by",
         "updated_by",
         "created_at",
@@ -60,8 +82,27 @@ class GenerationAdmin(admin.ModelAdmin):
         "cancelled_at",
         "paused_at",
     )
-    inlines = [GenerationStepInline, ArtifactInline]
+    inlines = [GenerationMilestoneInline, GenerationStepInline, ArtifactInline]
 
+
+@admin.register(GenerationMilestone)
+class GenerationMilestoneAdmin(admin.ModelAdmin):
+    """Admin configuration for GenerationMilestone."""
+
+    list_display = ("id", "generation", "sequence", "name", "status", "started_at", "completed_at")
+    list_filter = ("status", "created_at")
+    search_fields = ("name", "generation__id")
+    readonly_fields = ("id", "created_at", "updated_at")
+
+
+@admin.register(GenerationStateTransition)
+class GenerationStateTransitionAdmin(admin.ModelAdmin):
+    """Admin configuration for GenerationStateTransition."""
+
+    list_display = ("id", "generation", "sequence", "from_status", "to_status", "command_id", "actor", "created_at")
+    list_filter = ("from_status", "to_status", "created_at")
+    search_fields = ("generation__id", "reason", "command_id")
+    readonly_fields = ("id", "generation", "sequence", "from_status", "to_status", "command_id", "actor", "reason", "metadata", "created_at", "updated_at")
 
 
 @admin.register(GenerationStep)
@@ -72,6 +113,7 @@ class GenerationStepAdmin(admin.ModelAdmin):
         "step_number",
         "name",
         "generation",
+        "milestone",
         "agent_role",
         "status",
         "started_at",

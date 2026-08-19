@@ -1,4 +1,4 @@
-"""Data models for Generations, Generation Steps, Agent Runs, Workspaces, and Artifacts."""
+"""Data models for Generations, Milestones, State Transitions, Steps, Agent Runs, Workspaces, and Artifacts."""
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -8,6 +8,7 @@ from .enums import (
     AgentRunStatus,
     ArtifactType,
     GenerationStatus,
+    MilestoneStatus,
     StepStatus,
     WorkspaceStorageType,
 )
@@ -21,18 +22,27 @@ class GenerationQuerySet(models.QuerySet):
         return self.filter(organization=organization)
 
     def active(self):
-        """Filter ongoing generations."""
+        """Filter ongoing active generations (excluding terminal statuses)."""
         return self.exclude(
             status__in=[
-                GenerationStatus.COMPLETED,
-                GenerationStatus.FAILED,
                 GenerationStatus.CANCELLED,
+                GenerationStatus.FAILED,
+                GenerationStatus.TIMED_OUT,
+                GenerationStatus.ROLLED_BACK,
+                GenerationStatus.SUPERSEDED,
             ]
         )
 
     def completed(self):
-        """Filter successfully completed generations."""
-        return self.filter(status=GenerationStatus.COMPLETED)
+        """Filter successfully completed generations (post-build / release ready)."""
+        return self.filter(
+            status__in=[
+                GenerationStatus.RELEASE_CANDIDATE,
+                GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
+                GenerationStatus.STAGED,
+                GenerationStatus.ACTIVE,
+            ]
+        )
 
     def failed(self):
         """Filter failed generations."""
@@ -53,11 +63,40 @@ class Generation(OrganizationOwnedModel):
         help_text="Initial natural language prompt or requirements from user.",
     )
     status = models.CharField(
-        max_length=30,
+        max_length=64,
         choices=GenerationStatus.choices,
         default=GenerationStatus.DRAFT,
         db_index=True,
-        help_text="Current state in the generation lifecycle machine.",
+        help_text="Current canonical state in the generation lifecycle machine.",
+    )
+    state_version = models.PositiveBigIntegerField(
+        default=0,
+        help_text="Monotonically incrementing version for row concurrency control.",
+    )
+    next_transition_sequence = models.PositiveBigIntegerField(
+        default=1,
+        help_text="Monotonically increasing sequence number for state transitions.",
+    )
+    status_changed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when the status last transitioned.",
+    )
+    resume_status = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        help_text="Saved status prior to entering PAUSED state.",
+    )
+    cancel_requested_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when cancellation was requested.",
+    )
+    timed_out_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when generation timed out.",
     )
     current_step_number = models.PositiveIntegerField(
         default=0,
@@ -86,7 +125,7 @@ class Generation(OrganizationOwnedModel):
     completed_at = models.DateTimeField(
         null=True,
         blank=True,
-        help_text="Timestamp when generation successfully finished packaging.",
+        help_text="Timestamp when generation reached RELEASE_CANDIDATE.",
     )
     cancelled_at = models.DateTimeField(
         null=True,
@@ -142,9 +181,124 @@ class Generation(OrganizationOwnedModel):
         super().save(*args, **kwargs)
 
 
+class GenerationMilestone(TimeStampedModel):
+    """Represents a high-level sequential milestone group within a Generation."""
+
+    generation = models.ForeignKey(
+        Generation,
+        on_delete=models.CASCADE,
+        related_name="milestones",
+        db_index=True,
+        help_text="Generation this milestone belongs to.",
+    )
+    sequence = models.PositiveIntegerField(
+        help_text="Order index of this milestone within the generation sequence (1-indexed).",
+    )
+    name = models.CharField(
+        max_length=255,
+        help_text="Descriptive name of the milestone.",
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=MilestoneStatus.choices,
+        default=MilestoneStatus.PENDING,
+        db_index=True,
+        help_text="Current state of this milestone.",
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Milestone metadata and scope details.",
+    )
+    started_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when milestone execution commenced.",
+    )
+    completed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Timestamp when milestone completed.",
+    )
+
+    class Meta:
+        ordering = ["sequence"]
+        verbose_name = "Generation Milestone"
+        verbose_name_plural = "Generation Milestones"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["generation", "sequence"],
+                name="unique_generation_milestone_sequence",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Milestone #{self.sequence}: {self.name} [{self.status}]"
+
+
+class GenerationStateTransition(TimeStampedModel):
+    """Immutable transition audit record for Generation lifecycle state changes."""
+
+    generation = models.ForeignKey(
+        Generation,
+        on_delete=models.CASCADE,
+        related_name="state_transitions",
+        db_index=True,
+        help_text="Generation this transition belongs to.",
+    )
+    sequence = models.PositiveBigIntegerField(
+        help_text="Monotonically increasing sequence number within the generation.",
+    )
+    from_status = models.CharField(
+        max_length=64,
+        help_text="Origin status before transition.",
+    )
+    to_status = models.CharField(
+        max_length=64,
+        help_text="Target status after transition.",
+    )
+    command_id = models.UUIDField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Associated command ID if initiated by an idempotent command.",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="generation_transitions",
+        help_text="User who initiated or authorized this transition.",
+    )
+    reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Reason or trigger for this transition.",
+    )
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Contextual metadata recorded at transition time.",
+    )
+
+    class Meta:
+        ordering = ["sequence"]
+        verbose_name = "Generation State Transition"
+        verbose_name_plural = "Generation State Transitions"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["generation", "sequence"],
+                name="unique_generation_transition_sequence",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Transition #{self.sequence} for Gen {self.generation_id}: {self.from_status} -> {self.to_status}"
+
 
 class GenerationStep(TimeStampedModel):
-    """Represents a discrete logical work unit or milestone in a Generation."""
+    """Represents a discrete logical work unit or step in a Generation."""
 
     generation = models.ForeignKey(
         Generation,
@@ -152,6 +306,15 @@ class GenerationStep(TimeStampedModel):
         related_name="steps",
         db_index=True,
         help_text="Generation this step belongs to.",
+    )
+    milestone = models.ForeignKey(
+        GenerationMilestone,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="steps",
+        db_index=True,
+        help_text="Milestone container this step belongs to.",
     )
     step_number = models.PositiveIntegerField(
         help_text="Order index of this step within the generation sequence (1-indexed).",

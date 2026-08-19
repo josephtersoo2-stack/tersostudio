@@ -63,9 +63,13 @@ class ControlCenterSummaryView(APIView):
         total_generations = Generation.objects.count()
         active_generations = Generation.objects.exclude(
             status__in=[
-                GenerationStatus.COMPLETED,
+                GenerationStatus.ACTIVE,
+                GenerationStatus.RELEASE_CANDIDATE,
                 GenerationStatus.FAILED,
                 GenerationStatus.CANCELLED,
+                GenerationStatus.TIMED_OUT,
+                GenerationStatus.ROLLED_BACK,
+                GenerationStatus.SUPERSEDED,
             ]
         ).count()
 
@@ -73,18 +77,18 @@ class ControlCenterSummaryView(APIView):
             "total": total_generations,
             "active": active_generations,
             "draft": Generation.objects.filter(status=GenerationStatus.DRAFT).count(),
-            "specification": Generation.objects.filter(status=GenerationStatus.SPECIFICATION).count(),
+            "specification": Generation.objects.filter(status=GenerationStatus.SPECIFICATION_DRAFT).count(),
             "approved": Generation.objects.filter(status=GenerationStatus.APPROVED).count(),
-            "planning": Generation.objects.filter(status=GenerationStatus.PLANNING).count(),
+            "planning": Generation.objects.filter(status=GenerationStatus.PLAN_DRAFT).count(),
             "building": Generation.objects.filter(status=GenerationStatus.BUILDING).count(),
-            "testing": Generation.objects.filter(status=GenerationStatus.TESTING).count(),
-            "review": Generation.objects.filter(status=GenerationStatus.REVIEW).count(),
-            "packaging": Generation.objects.filter(status=GenerationStatus.PACKAGING).count(),
-            "completed": Generation.objects.filter(status=GenerationStatus.COMPLETED).count(),
+            "testing": Generation.objects.filter(status=GenerationStatus.SANDBOX_QA).count(),
+            "review": Generation.objects.filter(status=GenerationStatus.REVIEWING).count(),
+            "packaging": Generation.objects.filter(status=GenerationStatus.RELEASE_CANDIDATE).count(),
+            "completed": Generation.objects.filter(status__in=[GenerationStatus.RELEASE_CANDIDATE, GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL, GenerationStatus.STAGED, GenerationStatus.ACTIVE]).count(),
             "failed": Generation.objects.filter(status=GenerationStatus.FAILED).count(),
             "cancelled": Generation.objects.filter(status=GenerationStatus.CANCELLED).count(),
             "paused": Generation.objects.filter(status=GenerationStatus.PAUSED).count(),
-            "retrying": Generation.objects.filter(status=GenerationStatus.RETRYING).count(),
+            "retrying": Generation.objects.filter(status=GenerationStatus.SCHEDULED).count(),
         }
 
         # 3. Agent Runs Metrics
@@ -525,9 +529,12 @@ class ControlCenterGenerationCancelView(APIView):
         )
 
         non_cancellable = [
-            GenerationStatus.COMPLETED,
             GenerationStatus.CANCELLED,
             GenerationStatus.FAILED,
+            GenerationStatus.TIMED_OUT,
+            GenerationStatus.ROLLED_BACK,
+            GenerationStatus.SUPERSEDED,
+            GenerationStatus.ACTIVE,
         ]
         if generation.status in non_cancellable:
             return Response(
@@ -547,6 +554,7 @@ class ControlCenterGenerationCancelView(APIView):
                     generation=generation,
                     target_status=GenerationStatus.CANCELLED,
                     reason=reason,
+                    actor=request.user,
                 )
             except InvalidStateTransitionError as exc:
                 return Response(
@@ -609,7 +617,6 @@ class ControlCenterStepRetryView(APIView):
             id=step_id,
         )
 
-
         if step.status in [StepStatus.COMPLETED, StepStatus.RUNNING]:
             return Response(
                 {
@@ -620,50 +627,56 @@ class ControlCenterStepRetryView(APIView):
             )
 
         generation = step.generation
-        if generation.status == GenerationStatus.COMPLETED:
+        if generation.status in [
+            GenerationStatus.ACTIVE,
+            GenerationStatus.STAGED,
+            GenerationStatus.RELEASE_CANDIDATE,
+            GenerationStatus.CANCELLED,
+            GenerationStatus.ROLLED_BACK,
+            GenerationStatus.SUPERSEDED,
+        ]:
             return Response(
                 {
                     "error": "cannot_retry",
-                    "detail": "Cannot retry steps for a generation that has already completed.",
+                    "detail": f"Cannot retry steps for a generation in '{generation.status}' status.",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         with transaction.atomic():
-            # If parent generation is FAILED or CANCELLED, transition back to RETRYING -> BUILDING
-            if generation.status in [GenerationStatus.FAILED, GenerationStatus.CANCELLED]:
-                GenerationStateMachine.transition(
+            if generation.status in [GenerationStatus.FAILED, GenerationStatus.TIMED_OUT, GenerationStatus.BLOCKED]:
+                generation = GenerationStateMachine.transition(
                     generation=generation,
-                    target_status=GenerationStatus.RETRYING,
+                    target_status=GenerationStatus.SCHEDULED,
                     reason=f"Step #{step.step_number} retry initiated by operator.",
+                    actor=request.user,
                 )
-                GenerationStateMachine.transition(
+                generation = GenerationStateMachine.transition(
                     generation=generation,
                     target_status=GenerationStatus.BUILDING,
                     reason=f"Resumed BUILDING for retried step #{step.step_number}.",
+                    actor=request.user,
                 )
             elif generation.status == GenerationStatus.PAUSED:
-                GenerationStateMachine.transition(
+                generation = GenerationStateMachine.transition(
                     generation=generation,
                     target_status=GenerationStatus.BUILDING,
                     reason=f"Resumed from PAUSED for retried step #{step.step_number}.",
+                    actor=request.user,
                 )
-            elif generation.status in [
-                GenerationStatus.DRAFT,
-                GenerationStatus.SPECIFICATION,
-                GenerationStatus.APPROVED,
-                GenerationStatus.PLANNING,
-            ]:
-                GenerationStateMachine.transition(
+            elif generation.status != GenerationStatus.BUILDING:
+                generation = GenerationStateMachine.transition(
                     generation=generation,
                     target_status=GenerationStatus.BUILDING,
                     reason=f"Transitioned to BUILDING for retried step #{step.step_number}.",
+                    actor=request.user,
                 )
 
             # Reset step
             step.status = StepStatus.PENDING
             step.error_message = ""
             step.completed_at = None
+            step.generation = generation
             step.save(update_fields=["status", "error_message", "completed_at", "updated_at"])
 
             # Dispatch execution

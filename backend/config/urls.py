@@ -14,4 +14,5 @@ urlpatterns = [
     path("api/v1/conversations/", include("apps.conversations.urls")),
     path("api/v1/control-center/", include("apps.control_center.urls")),
     path("api/v1/", include("apps.generations.urls")),
+    path("api/v1/", include("apps.workflows.urls")),
 ]

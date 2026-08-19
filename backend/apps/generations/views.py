@@ -1,10 +1,15 @@
 """REST API ViewSets for the Generations domain."""
+from typing import Optional
+import uuid
+from django.core.exceptions import ValidationError
 from django.http import Http404, HttpResponse
 from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from apps.organizations.context import OrganizationContextMixin
+from apps.workflows.enums import CommandType
+from apps.workflows.services.commands import WorkflowCommandService
 from .enums import GenerationStatus
 from .exceptions import InvalidStateTransitionError
 from .models import AgentRun, Artifact, Generation, GenerationStep, Workspace
@@ -26,7 +31,6 @@ from .serializers import (
     StateTransitionRequestSerializer,
     WorkspaceSerializer,
 )
-from .services.state_machine import GenerationStateMachine
 from .storage import get_artifact_storage
 
 
@@ -73,116 +77,210 @@ class GenerationViewSet(
             return GenerationDetailSerializer
         return GenerationListSerializer
 
+    def _get_idempotency_key(self, request) -> Optional[str]:
+        """Extract Idempotency-Key header from request."""
+        return (
+            request.headers.get("Idempotency-Key")
+            or request.META.get("HTTP_IDEMPOTENCY_KEY")
+        )
+
     @action(detail=True, methods=["post"], url_path="transition")
     def transition_state(self, request, id=None):
-        """Perform a validated state transition on the generation."""
+        """Compatibility endpoint for state transitions.
+
+        Direct forward state transitions are rejected with 409 because state progression
+        is owned by the deterministic workflow coordinator.
+        """
         generation = self.get_object()
         serializer = StateTransitionRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        data = serializer.validated_data
-        try:
-            updated_gen = GenerationStateMachine.transition(
-                generation=generation,
-                target_status=data["target_status"],
-                reason=data.get("reason", ""),
-                error_message=data.get("error_message", ""),
-                failure_category=data.get("failure_category", ""),
-                metadata_update=data.get("metadata"),
-            )
-            return Response(
-                GenerationDetailSerializer(updated_gen, context={"request": request}).data,
-                status=status.HTTP_200_OK,
-            )
-        except InvalidStateTransitionError as exc:
-            return Response(
-                {
-                    "error": {
-                        "code": "invalid_state_transition",
-                        "message": str(exc),
-                        "status_code": status.HTTP_400_BAD_REQUEST,
-                        "details": {
-                            "current_status": exc.current_status,
-                            "target_status": exc.target_status,
-                        },
-                    }
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        target_status = serializer.validated_data["target_status"]
+
+        # Control transitions can route through the command service
+        if target_status == GenerationStatus.PAUSED:
+            return self.pause(request, id=id)
+        elif target_status == GenerationStatus.CANCELLED:
+            return self.cancel(request, id=id)
+        elif target_status == GenerationStatus.SCHEDULED and generation.status in [
+            GenerationStatus.FAILED,
+            GenerationStatus.TIMED_OUT,
+            GenerationStatus.BLOCKED,
+        ]:
+            return self.retry(request, id=id)
+
+        # Arbitrary forward transitions are strictly forbidden
+        return Response(
+            {
+                "error": {
+                    "code": "direct_transition_requires_coordinator",
+                    "message": "Direct state transitions cannot bypass the deterministic coordinator workflow engine.",
+                    "status_code": status.HTTP_409_CONFLICT,
+                    "details": {
+                        "current_status": generation.status,
+                        "target_status": target_status,
+                    },
+                }
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
 
     @action(detail=True, methods=["post"], url_path="pause")
     def pause(self, request, id=None):
-        """Pause an ongoing generation."""
+        """Pause an ongoing generation via idempotent command."""
         generation = self.get_object()
-        reason = request.data.get("reason", "Paused by user.")
+        idempotency_key = self._get_idempotency_key(request)
+
+        if not idempotency_key:
+            # Fallback UUID for internal/legacy callers without header
+            idempotency_key = str(uuid.uuid4())
+
         try:
-            updated_gen = GenerationStateMachine.transition(
+            result = WorkflowCommandService.execute_command(
                 generation=generation,
-                target_status=GenerationStatus.PAUSED,
-                reason=reason,
+                command_type=CommandType.PAUSE,
+                idempotency_key=idempotency_key,
+                payload=request.data if isinstance(request.data, dict) else {},
+                actor=request.user,
             )
-            return Response(GenerationDetailSerializer(updated_gen, context={"request": request}).data)
-        except InvalidStateTransitionError as exc:
+            generation.refresh_from_db()
+            response_data = {
+                "command_id": result["command_id"],
+                "idempotent_replay": result["idempotent_replay"],
+                "generation": GenerationDetailSerializer(generation, context={"request": request}).data,
+            }
+            status_code = status.HTTP_200_OK if result["idempotent_replay"] else status.HTTP_200_OK
+            return Response(response_data, status=status_code)
+        except ValidationError as exc:
+            err_code = getattr(exc, "code", "invalid_command")
+            status_code = status.HTTP_409_CONFLICT if "conflict" in str(err_code) or "invalid_state" in str(err_code) else status.HTTP_400_BAD_REQUEST
             return Response(
                 {
                     "error": {
-                        "code": "invalid_state_transition",
-                        "message": str(exc),
-                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "code": err_code or "invalid_command",
+                        "message": exc.message if hasattr(exc, "message") else str(exc),
+                        "status_code": status_code,
                         "details": {},
                     }
                 },
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status_code,
+            )
+
+    @action(detail=True, methods=["post"], url_path="resume")
+    def resume(self, request, id=None):
+        """Resume a paused generation via idempotent command."""
+        generation = self.get_object()
+        idempotency_key = self._get_idempotency_key(request)
+
+        if not idempotency_key:
+            idempotency_key = str(uuid.uuid4())
+
+        try:
+            result = WorkflowCommandService.execute_command(
+                generation=generation,
+                command_type=CommandType.RESUME,
+                idempotency_key=idempotency_key,
+                payload=request.data if isinstance(request.data, dict) else {},
+                actor=request.user,
+            )
+            generation.refresh_from_db()
+            response_data = {
+                "command_id": result["command_id"],
+                "idempotent_replay": result["idempotent_replay"],
+                "generation": GenerationDetailSerializer(generation, context={"request": request}).data,
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        except ValidationError as exc:
+            err_code = getattr(exc, "code", "invalid_command")
+            status_code = status.HTTP_409_CONFLICT if "conflict" in str(err_code) or "invalid_state" in str(err_code) else status.HTTP_400_BAD_REQUEST
+            return Response(
+                {
+                    "error": {
+                        "code": err_code or "invalid_command",
+                        "message": exc.message if hasattr(exc, "message") else str(exc),
+                        "status_code": status_code,
+                        "details": {},
+                    }
+                },
+                status=status_code,
             )
 
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, id=None):
-        """Cancel a generation."""
+        """Cancel a generation via idempotent command."""
         generation = self.get_object()
-        reason = request.data.get("reason", "Cancelled by user.")
+        idempotency_key = self._get_idempotency_key(request)
+
+        if not idempotency_key:
+            idempotency_key = str(uuid.uuid4())
+
         try:
-            updated_gen = GenerationStateMachine.transition(
+            result = WorkflowCommandService.execute_command(
                 generation=generation,
-                target_status=GenerationStatus.CANCELLED,
-                reason=reason,
+                command_type=CommandType.CANCEL,
+                idempotency_key=idempotency_key,
+                payload=request.data if isinstance(request.data, dict) else {},
+                actor=request.user,
             )
-            return Response(GenerationDetailSerializer(updated_gen, context={"request": request}).data)
-        except InvalidStateTransitionError as exc:
+            generation.refresh_from_db()
+            response_data = {
+                "command_id": result["command_id"],
+                "idempotent_replay": result["idempotent_replay"],
+                "generation": GenerationDetailSerializer(generation, context={"request": request}).data,
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        except ValidationError as exc:
+            err_code = getattr(exc, "code", "invalid_command")
+            status_code = status.HTTP_409_CONFLICT if "conflict" in str(err_code) or "invalid_state" in str(err_code) else status.HTTP_400_BAD_REQUEST
             return Response(
                 {
                     "error": {
-                        "code": "invalid_state_transition",
-                        "message": str(exc),
-                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "code": err_code or "invalid_command",
+                        "message": exc.message if hasattr(exc, "message") else str(exc),
+                        "status_code": status_code,
                         "details": {},
                     }
                 },
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status_code,
             )
 
     @action(detail=True, methods=["post"], url_path="retry")
     def retry(self, request, id=None):
-        """Retry a failed generation."""
+        """Retry a failed generation via idempotent command."""
         generation = self.get_object()
-        reason = request.data.get("reason", "Retrying failed generation.")
+        idempotency_key = self._get_idempotency_key(request)
+
+        if not idempotency_key:
+            idempotency_key = str(uuid.uuid4())
+
         try:
-            updated_gen = GenerationStateMachine.transition(
+            result = WorkflowCommandService.execute_command(
                 generation=generation,
-                target_status=GenerationStatus.RETRYING,
-                reason=reason,
+                command_type=CommandType.RETRY,
+                idempotency_key=idempotency_key,
+                payload=request.data if isinstance(request.data, dict) else {},
+                actor=request.user,
             )
-            return Response(GenerationDetailSerializer(updated_gen, context={"request": request}).data)
-        except InvalidStateTransitionError as exc:
+            generation.refresh_from_db()
+            response_data = {
+                "command_id": result["command_id"],
+                "idempotent_replay": result["idempotent_replay"],
+                "generation": GenerationDetailSerializer(generation, context={"request": request}).data,
+            }
+            return Response(response_data, status=status.HTTP_200_OK)
+        except ValidationError as exc:
+            err_code = getattr(exc, "code", "invalid_command")
+            status_code = status.HTTP_409_CONFLICT if "conflict" in str(err_code) or "retry_not_available" in str(err_code) else status.HTTP_400_BAD_REQUEST
             return Response(
                 {
                     "error": {
-                        "code": "invalid_state_transition",
-                        "message": str(exc),
-                        "status_code": status.HTTP_400_BAD_REQUEST,
+                        "code": err_code or "invalid_command",
+                        "message": exc.message if hasattr(exc, "message") else str(exc),
+                        "status_code": status_code,
                         "details": {},
                     }
                 },
-                status=status.HTTP_400_BAD_REQUEST,
+                status=status_code,
             )
 
     @action(detail=True, methods=["get"], url_path="workspace")

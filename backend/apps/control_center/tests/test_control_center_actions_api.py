@@ -143,7 +143,7 @@ class TestControlCenterGenerationCancel:
             project=sample_project,
             created_by=non_staff_user,
             prompt="Completed plugin",
-            status=GenerationStatus.COMPLETED,
+            status=GenerationStatus.ACTIVE,
             completed_at=timezone.now(),
         )
         api_client.force_authenticate(user=staff_user)
@@ -154,7 +154,7 @@ class TestControlCenterGenerationCancel:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         data = response.json()
         assert data["error"] == "cannot_cancel"
-        assert "COMPLETED" in data["detail"]
+        assert "ACTIVE" in data["detail"]
 
     def test_cancel_generation_rejection_on_already_cancelled_generation(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
@@ -254,7 +254,7 @@ class TestControlCenterStepRetry:
         assert step.status == StepStatus.RUNNING
         assert step.runs.count() == 2
 
-    def test_retry_step_staff_happy_path_on_cancelled_step(self, api_client, staff_user, sample_project, non_staff_user):
+    def test_retry_step_rejection_on_cancelled_generation(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
             organization=sample_project.organization,
             project=sample_project,
@@ -276,13 +276,10 @@ class TestControlCenterStepRetry:
         url = f"/api/v1/control-center/steps/{step.id}/retry/"
         response = api_client.post(url, {})
 
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
         data = response.json()
-        assert data["generation_status"] == GenerationStatus.BUILDING
-        assert data["run"]["run_number"] == 1
-
-        gen.refresh_from_db()
-        assert gen.status == GenerationStatus.BUILDING
+        assert data["error"] == "cannot_retry"
+        assert "CANCELLED" in data["detail"]
 
     def test_retry_step_rejection_on_completed_step(self, api_client, staff_user, sample_project, non_staff_user):
         gen = Generation.objects.create(
@@ -342,7 +339,7 @@ class TestControlCenterStepRetry:
             project=sample_project,
             created_by=non_staff_user,
             prompt="Done plugin",
-            status=GenerationStatus.COMPLETED,
+            status=GenerationStatus.ACTIVE,
             completed_at=timezone.now(),
         )
         step = GenerationStep.objects.create(
@@ -360,4 +357,4 @@ class TestControlCenterStepRetry:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         data = response.json()
         assert data["error"] == "cannot_retry"
-        assert "already completed" in data["detail"]
+        assert "ACTIVE" in data["detail"]

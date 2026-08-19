@@ -222,14 +222,51 @@ Accept: application/json
 - **Endpoint**: `GET /api/v1/generations/{id}/`
 - **Response**: `200 OK` (includes nested `steps`, `workspace`, and `artifacts`)
 
-### 7.4. State Machine Transition
+### 7.4. State Machine Transition & Coordinator Gate
 - **Endpoint**: `POST /api/v1/generations/{id}/transition/`
-- **Payload**:
-  ```json
-  {
-    "target_status": "BUILDING",
-    "reason": "Starting execution of coder agent step.",
-    "metadata_update": {}
-  }
-  ```
+- **Protection**: Direct forward progression from the client is protected and requires the backend workflow coordinator (`409 Conflict` with code `direct_transition_requires_coordinator`). Use idempotent control commands (`pause/`, `resume/`, `cancel/`, `retry/`) instead.
+
+### 7.5. Idempotent Generation Control Commands
+All control commands accept an optional `Idempotency-Key` request header (or generate a UUID key) and ensure exactly-once execution semantics with cached idempotent replaying.
+
+- **Pause Generation**: `POST /api/v1/generations/{id}/pause/`
+  - Payload: `{"reason": "Pausing for user review"}`
+  - Response: `200 OK` (sets `status=PAUSED`, records prior state in `resume_status`)
+- **Resume Generation**: `POST /api/v1/generations/{id}/resume/`
+  - Payload: `{"reason": "Resuming generation"}`
+  - Response: `200 OK` (restores state from `resume_status`)
+- **Cancel Generation**: `POST /api/v1/generations/{id}/cancel/`
+  - Payload: `{"reason": "User requested cancellation"}`
+  - Response: `200 OK` (moves through `CANCELLING` to terminal `CANCELLED`)
+- **Retry Generation**: `POST /api/v1/generations/{id}/retry/`
+  - Payload: `{"reason": "Operator retry"}`
+  - Response: `200 OK` (transitions recoverable failures back to `SCHEDULED`)
+
+---
+
+## 8. Workflows API (`/api/v1/`)
+
+All workflows inspection endpoints are tenant-isolated and strictly read-only (`GET` only; mutation methods return `405 Method Not Allowed`).
+
+### 8.1. List Workflow Runs
+- **Endpoint**: `GET /api/v1/workflow-runs/`
+- **Query Parameters**: `generation_id`, `status`
 - **Response**: `200 OK`
+
+### 8.2. Retrieve Workflow Run Detail
+- **Endpoint**: `GET /api/v1/workflow-runs/{id}/`
+- **Response**: `200 OK` (includes DAG topology and summary counts)
+
+### 8.3. List Work Packages
+- **Endpoint**: `GET /api/v1/work-packages/`
+- **Query Parameters**: `workflow_run_id`, `status`, `agent_role`
+- **Response**: `200 OK`
+
+### 8.4. Retrieve Work Package Detail
+- **Endpoint**: `GET /api/v1/work-packages/{id}/`
+- **Response**: `200 OK` (includes dependencies and active lease info)
+
+### 8.5. List Work Package Attempts
+- **Endpoint**: `GET /api/v1/work-packages/{id}/attempts/`
+- **Response**: `200 OK` (ordered by `attempt_number` ascending)
+

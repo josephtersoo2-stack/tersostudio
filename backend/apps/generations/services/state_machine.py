@@ -1,85 +1,189 @@
 """Generation lifecycle state machine service.
 
-Enforces valid state transitions, updates timestamp milestones, and records
-state history for the multi-agent generation domain.
+Enforces deterministic state transitions, database row-level locking,
+monotonic state versioning, relational transition auditing, and transactional
+outbox event logging.
 """
 from typing import Any, Dict, Optional, Set
+import uuid
+from django.db import transaction
 from django.utils import timezone
 
 from apps.generations.enums import GenerationStatus
 from apps.generations.exceptions import InvalidStateTransitionError
-from apps.generations.models import Generation
+from apps.generations.models import Generation, GenerationStateTransition
+from apps.realtime.events import EventType
 
+# Canonical B3 transition graph
 VALID_TRANSITIONS: Dict[str, Set[str]] = {
     GenerationStatus.DRAFT: {
-        GenerationStatus.SPECIFICATION,
+        GenerationStatus.DISCOVERY,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.SPECIFICATION: {
-        GenerationStatus.APPROVED,
+    GenerationStatus.DISCOVERY: {
+        GenerationStatus.SPECIFICATION_DRAFT,
+        GenerationStatus.PAUSED,
         GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.SPECIFICATION_DRAFT: {
+        GenerationStatus.PLAN_DRAFT,
+        GenerationStatus.PAUSED,
+        GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.PLAN_DRAFT: {
+        GenerationStatus.AWAITING_APPROVAL,
+        GenerationStatus.PAUSED,
+        GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.AWAITING_APPROVAL: {
+        GenerationStatus.APPROVED,
+        GenerationStatus.SPECIFICATION_DRAFT,  # Human revision loop
+        GenerationStatus.PLAN_DRAFT,           # Human revision loop
+        GenerationStatus.PAUSED,
+        GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
     GenerationStatus.APPROVED: {
-        GenerationStatus.PLANNING,
+        GenerationStatus.SCHEDULED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.PLANNING: {
+    GenerationStatus.SCHEDULED: {
         GenerationStatus.BUILDING,
         GenerationStatus.PAUSED,
         GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
     GenerationStatus.BUILDING: {
-        GenerationStatus.TESTING,
+        GenerationStatus.INTEGRATING,
         GenerationStatus.PAUSED,
         GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.TESTING: {
-        GenerationStatus.REVIEW,
-        GenerationStatus.BUILDING,  # Repair loop from test failure
+    GenerationStatus.INTEGRATING: {
+        GenerationStatus.REVIEWING,
         GenerationStatus.PAUSED,
         GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.REVIEW: {
-        GenerationStatus.PACKAGING,
-        GenerationStatus.BUILDING,  # Critic / review repair loop
+    GenerationStatus.REVIEWING: {
+        GenerationStatus.SANDBOX_QA,
+        GenerationStatus.CORRECTING,  # Review findings repair loop
         GenerationStatus.PAUSED,
         GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.PACKAGING: {
-        GenerationStatus.COMPLETED,
+    GenerationStatus.CORRECTING: {
+        GenerationStatus.BUILDING,
+        GenerationStatus.INTEGRATING,
+        GenerationStatus.REVIEWING,
+        GenerationStatus.PAUSED,
         GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.SANDBOX_QA: {
+        GenerationStatus.RELEASE_CANDIDATE,
+        GenerationStatus.CORRECTING,  # QA defect repair loop
+        GenerationStatus.PAUSED,
+        GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.RELEASE_CANDIDATE: {
+        GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
+        GenerationStatus.PAUSED,
+        GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL: {
+        GenerationStatus.STAGED,
+        GenerationStatus.PAUSED,
+        GenerationStatus.FAILED,
+        GenerationStatus.TIMED_OUT,
+        GenerationStatus.BLOCKED,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.STAGED: {
+        GenerationStatus.ACTIVE,
+        GenerationStatus.CANCELLING,
+        GenerationStatus.CANCELLED,
+    },
+    GenerationStatus.ACTIVE: {
+        GenerationStatus.ROLLED_BACK,
     },
     GenerationStatus.PAUSED: {
-        GenerationStatus.PLANNING,
+        GenerationStatus.DISCOVERY,
+        GenerationStatus.SPECIFICATION_DRAFT,
+        GenerationStatus.PLAN_DRAFT,
+        GenerationStatus.AWAITING_APPROVAL,
+        GenerationStatus.SCHEDULED,
         GenerationStatus.BUILDING,
-        GenerationStatus.TESTING,
-        GenerationStatus.REVIEW,
-        GenerationStatus.PACKAGING,
+        GenerationStatus.INTEGRATING,
+        GenerationStatus.REVIEWING,
+        GenerationStatus.CORRECTING,
+        GenerationStatus.SANDBOX_QA,
+        GenerationStatus.RELEASE_CANDIDATE,
+        GenerationStatus.AWAITING_DEPLOYMENT_APPROVAL,
+        GenerationStatus.CANCELLING,
         GenerationStatus.CANCELLED,
+        GenerationStatus.FAILED,
+    },
+    GenerationStatus.CANCELLING: {
+        GenerationStatus.CANCELLED,
+        GenerationStatus.FAILED,
     },
     GenerationStatus.FAILED: {
-        GenerationStatus.RETRYING,
+        GenerationStatus.SCHEDULED,  # Deterministic idempotent retry
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.RETRYING: {
-        GenerationStatus.PLANNING,
-        GenerationStatus.BUILDING,
-        GenerationStatus.TESTING,
-        GenerationStatus.REVIEW,
-        GenerationStatus.PACKAGING,
-        GenerationStatus.FAILED,
+    GenerationStatus.TIMED_OUT: {
+        GenerationStatus.SCHEDULED,  # Deterministic idempotent retry
         GenerationStatus.CANCELLED,
     },
-    GenerationStatus.COMPLETED: set(),  # Terminal state
-    GenerationStatus.CANCELLED: {
-        GenerationStatus.RETRYING,
+    GenerationStatus.BLOCKED: {
+        GenerationStatus.SCHEDULED,  # Deterministic idempotent retry
+        GenerationStatus.CANCELLED,
     },
+    GenerationStatus.CANCELLED: set(),    # Terminal state
+    GenerationStatus.ROLLED_BACK: set(),  # Terminal state
+    GenerationStatus.SUPERSEDED: set(),   # Terminal state
 }
 
 
@@ -100,71 +204,139 @@ class GenerationStateMachine:
         reason: str = "",
         error_message: str = "",
         failure_category: str = "",
+        command_id: Optional[uuid.UUID] = None,
+        actor: Optional[Any] = None,
         metadata_update: Optional[Dict[str, Any]] = None,
     ) -> Generation:
-        """Execute a validated state transition on a Generation instance.
+        """Execute a locked, transactional state transition on a Generation instance.
 
         Raises:
             InvalidStateTransitionError: If target_status is not a valid progression.
         """
-        current_status = generation.status
+        with transaction.atomic():
+            # Re-fetch and lock the generation instance
+            locked_gen = (
+                Generation.objects.select_for_update()
+                .filter(id=generation.id)
+                .first()
+            )
+            if not locked_gen:
+                raise ValueError(f"Generation with ID {generation.id} does not exist.")
 
-        # If already in target status, return idempotently
-        if current_status == target_status:
-            return generation
+            current_status = locked_gen.status
 
-        if not cls.can_transition(current_status, target_status):
-            raise InvalidStateTransitionError(
-                current_status=current_status,
-                target_status=target_status,
-                message=(
-                    f"Invalid generation status transition: '{current_status}' -> '{target_status}'. "
-                    f"Allowed transitions from '{current_status}': {list(VALID_TRANSITIONS.get(current_status, set()))}"
-                ),
+            # Idempotent no-op if already in target status
+            if current_status == target_status:
+                return locked_gen
+
+            if not cls.can_transition(current_status, target_status):
+                raise InvalidStateTransitionError(
+                    current_status=current_status,
+                    target_status=target_status,
+                    message=(
+                        f"Invalid generation status transition: '{current_status}' -> '{target_status}'. "
+                        f"Allowed transitions from '{current_status}': {list(VALID_TRANSITIONS.get(current_status, set()))}"
+                    ),
+                )
+
+            now = timezone.now()
+            seq = locked_gen.next_transition_sequence
+            locked_gen.next_transition_sequence += 1
+            locked_gen.state_version += 1
+            locked_gen.status_changed_at = now
+
+            if metadata_update:
+                locked_gen.metadata.update(metadata_update)
+
+            if "state_history" not in locked_gen.metadata or not isinstance(locked_gen.metadata["state_history"], list):
+                locked_gen.metadata["state_history"] = []
+            locked_gen.metadata["state_history"].append({
+                "from_status": current_status,
+                "to_status": target_status,
+                "timestamp": now.isoformat(),
+                "reason": reason,
+                "failure_category": failure_category,
+                "error_message": error_message,
+            })
+
+            # Handle pause & resume bookkeeping
+            if target_status == GenerationStatus.PAUSED:
+                locked_gen.resume_status = current_status
+                locked_gen.paused_at = now
+            elif current_status == GenerationStatus.PAUSED and target_status != GenerationStatus.PAUSED:
+                locked_gen.paused_at = None
+                locked_gen.resume_status = None
+
+            # Handle milestone timestamps
+            if target_status == GenerationStatus.RELEASE_CANDIDATE and not locked_gen.completed_at:
+                locked_gen.completed_at = now
+            elif target_status == GenerationStatus.FAILED:
+                locked_gen.failed_at = now
+                locked_gen.error_message = error_message or locked_gen.error_message
+                locked_gen.failure_category = failure_category or locked_gen.failure_category
+            elif target_status == GenerationStatus.TIMED_OUT:
+                locked_gen.timed_out_at = now
+                locked_gen.error_message = error_message or locked_gen.error_message
+                locked_gen.failure_category = failure_category or locked_gen.failure_category
+            elif target_status == GenerationStatus.CANCELLING:
+                locked_gen.cancel_requested_at = now
+            elif target_status == GenerationStatus.CANCELLED:
+                locked_gen.cancelled_at = now
+            elif current_status in [GenerationStatus.FAILED, GenerationStatus.TIMED_OUT, GenerationStatus.BLOCKED] and target_status == GenerationStatus.SCHEDULED:
+                # Recovering via retry
+                locked_gen.error_message = ""
+                locked_gen.failure_category = ""
+                locked_gen.failed_at = None
+                locked_gen.timed_out_at = None
+
+            locked_gen.status = target_status
+            locked_gen.save()
+
+            # Record relational transition history (B3 truth)
+            GenerationStateTransition.objects.create(
+                generation=locked_gen,
+                sequence=seq,
+                from_status=current_status,
+                to_status=target_status,
+                command_id=command_id,
+                actor=actor,
+                reason=reason,
+                metadata=metadata_update or {},
             )
 
-        now = timezone.now()
-        update_fields = ["status", "updated_at", "metadata"]
+            # Enqueue transactional outbox event
+            from apps.workflows.services.outbox import OutboxService
 
-        # Update metadata state history
-        history_entry = {
-            "from_status": current_status,
-            "to_status": target_status,
-            "timestamp": now.isoformat(),
-            "reason": reason,
-        }
-        if failure_category:
-            history_entry["failure_category"] = failure_category
-        if error_message:
-            history_entry["error_message"] = error_message
+            event_type = EventType.GENERATION_STATE_CHANGED
+            if target_status == GenerationStatus.PAUSED:
+                event_type = EventType.GENERATION_PAUSED
+            elif target_status == GenerationStatus.CANCELLING:
+                event_type = EventType.GENERATION_CANCELLATION_REQUESTED
+            elif target_status == GenerationStatus.CANCELLED:
+                event_type = EventType.GENERATION_CANCELLED
+            elif target_status == GenerationStatus.FAILED:
+                event_type = EventType.GENERATION_FAILED
+            elif target_status == GenerationStatus.TIMED_OUT:
+                event_type = EventType.GENERATION_TIMED_OUT
+            elif target_status == GenerationStatus.BLOCKED:
+                event_type = EventType.GENERATION_BLOCKED
+            elif current_status == GenerationStatus.PAUSED:
+                event_type = EventType.GENERATION_RESUMED
 
-        if "state_history" not in generation.metadata:
-            generation.metadata["state_history"] = []
-        generation.metadata["state_history"].append(history_entry)
+            OutboxService.enqueue_event(
+                organization=locked_gen.organization,
+                generation=locked_gen,
+                aggregate_type="generation",
+                aggregate_id=str(locked_gen.id),
+                event_type=event_type,
+                payload={
+                    "generation_id": str(locked_gen.id),
+                    "from_status": current_status,
+                    "to_status": target_status,
+                    "sequence": seq,
+                    "state_version": locked_gen.state_version,
+                    "reason": reason,
+                },
+            )
 
-        if metadata_update:
-            generation.metadata.update(metadata_update)
-
-        # Handle target milestone timestamps
-        if target_status == GenerationStatus.COMPLETED:
-            generation.completed_at = now
-            update_fields.append("completed_at")
-        elif target_status == GenerationStatus.FAILED:
-            generation.failed_at = now
-            generation.error_message = error_message or generation.error_message
-            generation.failure_category = failure_category or generation.failure_category
-            update_fields.extend(["failed_at", "error_message", "failure_category"])
-        elif target_status == GenerationStatus.CANCELLED:
-            generation.cancelled_at = now
-            update_fields.append("cancelled_at")
-        elif target_status == GenerationStatus.PAUSED:
-            generation.paused_at = now
-            update_fields.append("paused_at")
-        elif current_status == GenerationStatus.PAUSED:
-            generation.paused_at = None
-            update_fields.append("paused_at")
-
-        generation.status = target_status
-        generation.save(update_fields=update_fields)
-
-        return generation
+            return locked_gen
